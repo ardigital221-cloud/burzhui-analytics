@@ -1,505 +1,85 @@
-<!DOCTYPE html>
-<html lang="ru" class="dark">
+<!doctype html>
+<html lang="ru">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="theme-color" content="#0b0f17">
-  <title>BURЖУЙ Analytics | Дашборд сети</title>
-  
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0c10">
+  <meta name="description" content="Личный кабинет команды BURЖУЙ">
+  <title>BURЖУЙ Команда</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-  
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          fontFamily: { sans: ['Inter', 'sans-serif'] },
-          colors: {
-            brand: { 500: '#f59e0b', 600: '#d97706', 700: '#b45309' }
-          }
-        }
-      }
-    }
-  </script>
-  
-  <style>
-    body {
-      background-color: #0b0f17;
-      color: #f1f5f9;
-      touch-action: manipulation;
-      -webkit-tap-highlight-color: transparent;
-    }
-    .no-scrollbar::-webkit-scrollbar { display: none; }
-    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-    
-    ::-webkit-scrollbar { width: 5px; height: 5px; }
-    ::-webkit-scrollbar-track { background: #0f172a; }
-    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: #475569; }
-    
-    /* Prevent iOS auto-zoom on input focus */
-    input[type="date"], select {
-      font-size: 16px !important;
-    }
-    @media (min-width: 640px) {
-      input[type="date"], select {
-        font-size: 12px !important;
-      }
-    }
-
-    .loader {
-      border: 2.5px solid rgba(245, 158, 11, 0.2);
-      border-top-color: #f59e0b;
-      border-radius: 50%;
-      width: 20px;
-      height: 20px;
-      animation: spin 0.8s linear infinite;
-    }
-    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-  </style>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
 </head>
-<body class="min-h-screen antialiased flex flex-col justify-between text-slate-100 pb-safe">
-
-  <!-- TOP BAR (Mobile-Optimized Header) -->
-  <header class="border-b border-slate-800/90 bg-slate-900/95 backdrop-blur-md sticky top-0 z-50">
-    <div class="max-w-7xl mx-auto px-3 py-2.5 sm:px-6 sm:py-3.5 flex flex-col gap-2.5">
-      
-      <!-- Top Row: Logo & Point Selector & Refresh -->
-      <div class="flex items-center justify-between gap-2">
-        
-        <!-- Logo -->
-        <div class="flex items-center gap-2 shrink-0">
-          <div class="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center font-black text-amber-400 text-base sm:text-lg shadow-inner">
-            Ж
+<body>
+  <div id="app" class="app-root">
+    <section id="auth-screen" class="auth-screen" aria-labelledby="auth-title">
+      <div class="auth-orbit auth-orbit-one" aria-hidden="true"></div>
+      <div class="auth-orbit auth-orbit-two" aria-hidden="true"></div>
+      <div class="auth-panel">
+        <div class="brand-mark brand-mark-large" aria-hidden="true"><span>Ж</span></div>
+        <p class="eyebrow">BURЖУЙ · КОМАНДА</p>
+        <h1 id="auth-title">Вход в личный кабинет</h1>
+        <p class="auth-subtitle">Работа, задачи и показатели — в одном спокойном пространстве.</p>
+        <form id="login-form" class="stack-form" novalidate>
+          <label class="field-label" for="login-username">Логин</label>
+          <input id="login-username" class="text-input" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required placeholder="Введите логин">
+          <label class="field-label" for="login-password">Пароль</label>
+          <div class="input-with-action">
+            <input id="login-password" class="text-input" name="password" type="password" autocomplete="current-password" required placeholder="Введите пароль">
+            <button id="toggle-login-password" class="input-action" type="button" aria-label="Показать пароль">Показать</button>
           </div>
-          <div>
-            <div class="flex items-center gap-1.5">
-              <span class="font-extrabold tracking-tight text-sm sm:text-base text-white">«BURЖУЙ»</span>
-              <span class="text-[9px] sm:text-[10px] font-bold uppercase bg-amber-500/10 text-amber-400 px-1.5 py-0.5 rounded-full border border-amber-500/20">
-                Live
-              </span>
-            </div>
-            <p class="text-[10px] text-slate-400 hidden sm:block">Мониторинг продаж iiko</p>
-          </div>
-        </div>
-
-        <!-- Point Selector (Prominent) -->
-        <div class="flex-1 max-w-xs sm:max-w-md">
-          <div class="relative">
-            <select id="department-select" class="w-full bg-slate-800/90 border border-slate-700/80 rounded-xl pl-3 pr-8 py-2 text-xs font-bold text-amber-300 focus:outline-none focus:border-amber-500 transition-all cursor-pointer truncate shadow-sm appearance-none">
-              <option value="" disabled selected>Загрузка точек...</option>
-            </select>
-            <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2.5 text-slate-400">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-            </div>
-          </div>
-        </div>
-
-        <!-- Quick Refresh Button (Touch-Friendly) -->
-        <button id="apply-btn" onclick="fetchData()" class="shrink-0 flex items-center justify-center w-9 h-9 sm:w-auto sm:px-3.5 sm:py-2 rounded-xl bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-bold transition-all shadow-md shadow-amber-500/20">
-          <span id="btn-icon" class="text-sm">🔄</span>
-          <span id="btn-text" class="text-xs ml-1.5 hidden sm:inline">Обновить</span>
-        </button>
-
+          <p id="login-error" class="form-error" role="alert"></p>
+          <button id="login-submit" class="button button-primary button-large" type="submit"><span>Войти в команду</span><span class="button-spinner" aria-hidden="true"></span></button>
+        </form>
+        <p class="auth-footnote">Если не получается войти, обратитесь к руководителю.</p>
       </div>
+    </section>
 
-      <!-- Second Row: Horizontal Presets & Custom Date Trigger -->
-      <div class="flex items-center justify-between gap-2 overflow-hidden">
-        
-        <!-- Presets Pills (Horizontal Scroll on Phone) -->
-        <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 w-full text-xs">
-          <button onclick="setPreset('today', this)" class="preset-btn shrink-0 px-3 py-1.5 rounded-lg bg-slate-800/90 text-slate-300 hover:text-white border border-slate-700/60 font-medium transition-all text-xs">Сегодня</button>
-          <button onclick="setPreset('5days', this)" class="preset-btn active shrink-0 px-3 py-1.5 rounded-lg bg-amber-500 text-slate-950 font-extrabold border border-amber-500 transition-all shadow-sm text-xs">5 дней</button>
-          <button onclick="setPreset('7days', this)" class="preset-btn shrink-0 px-3 py-1.5 rounded-lg bg-slate-800/90 text-slate-300 hover:text-white border border-slate-700/60 font-medium transition-all text-xs">7 дней</button>
-          <button onclick="setPreset('14days', this)" class="preset-btn shrink-0 px-3 py-1.5 rounded-lg bg-slate-800/90 text-slate-300 hover:text-white border border-slate-700/60 font-medium transition-all text-xs">14 дней</button>
-          <button onclick="setPreset('month', this)" class="preset-btn shrink-0 px-3 py-1.5 rounded-lg bg-slate-800/90 text-slate-300 hover:text-white border border-slate-700/60 font-medium transition-all text-xs">Месяц</button>
-          
-          <!-- Toggle Custom Dates Button -->
-          <button onclick="toggleCustomDates()" id="toggle-dates-btn" class="shrink-0 px-2.5 py-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-amber-300 border border-slate-700 flex items-center gap-1 transition-all text-xs">
-            <span>📅</span>
-            <span class="text-[11px]" id="dates-summary-label">Выбрать даты</span>
-          </button>
+    <section id="app-screen" class="app-screen is-hidden" aria-label="Личный кабинет">
+      <aside id="sidebar" class="sidebar">
+        <div class="sidebar-top">
+          <a class="brand-lockup" href="#overview" data-view="overview" aria-label="На главную">
+            <span class="brand-mark"><span>Ж</span></span>
+            <span><strong>BURЖУЙ</strong><small>Команда</small></span>
+          </a>
+          <button id="sidebar-collapse" class="icon-button sidebar-collapse" type="button" aria-label="Свернуть меню" title="Свернуть меню"><span>‹</span></button>
         </div>
-
-      </div>
-
-      <!-- Collapsible Custom Date Picker (Expands on Mobile when needed) -->
-      <div id="custom-dates-panel" class="hidden pt-2 border-t border-slate-800/80 transition-all">
-        <div class="grid grid-cols-2 sm:flex items-center gap-2">
-          <div class="flex-1">
-            <label class="text-[10px] uppercase font-bold text-slate-400 block mb-1">С даты</label>
-            <input type="date" id="date-from" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500" />
-          </div>
-          <div class="flex-1">
-            <label class="text-[10px] uppercase font-bold text-slate-400 block mb-1">По дату</label>
-            <input type="date" id="date-to" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500" />
-          </div>
-          <div class="col-span-2 sm:col-span-1 sm:self-end">
-            <button onclick="applyCustomDates()" class="w-full bg-slate-700 hover:bg-slate-600 text-white font-bold px-3 py-1.5 rounded-xl text-xs transition-all">
-              Применить даты
-            </button>
-          </div>
+        <div class="workspace-label">Рабочее пространство</div>
+        <nav id="desktop-nav" class="main-nav" aria-label="Основная навигация"></nav>
+        <div class="sidebar-bottom">
+          <div class="sidebar-tip"><span class="tip-icon">✦</span><div><strong>Фокус дня</strong><span>Меньше шума — больше результата.</span></div></div>
+          <button id="sidebar-logout" class="nav-item nav-item-muted" type="button"><span class="nav-icon">↪</span><span class="nav-label">Выйти</span></button>
         </div>
-      </div>
+      </aside>
 
-    </div>
-  </header>
-
-  <!-- CONTENT WRAPPER -->
-  <main class="max-w-7xl mx-auto px-3 py-4 sm:px-6 sm:py-6 w-full flex-1">
-    
-    <!-- Status Banner / Loading -->
-    <div id="loading-state" class="hidden mb-4 p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-between">
-      <div class="flex items-center gap-2.5">
-        <div class="loader"></div>
-        <p class="text-xs sm:text-sm font-medium text-amber-300" id="loading-text">Загрузка данных iiko...</p>
-      </div>
-      <span class="text-[10px] text-slate-400 shrink-0" id="loading-time"></span>
-    </div>
-
-    <!-- Error Banner -->
-    <div id="error-state" class="hidden mb-4 p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs sm:text-sm flex items-center justify-between">
-      <span id="error-text">Произошла ошибка при загрузке данных</span>
-      <button onclick="fetchData()" class="underline text-xs hover:text-white shrink-0 ml-2">Повторить</button>
-    </div>
-
-    <!-- KPI CARDS (2-col on phone, 4-col on desktop) -->
-    <div class="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4 mb-4 sm:mb-6">
-      
-      <!-- KPI 1: Выручка -->
-      <div class="bg-slate-900 border border-slate-800/90 rounded-xl sm:rounded-2xl p-3.5 sm:p-5 shadow-lg relative overflow-hidden">
-        <div class="absolute -right-3 -bottom-3 w-16 sm:w-20 h-16 sm:h-20 bg-amber-500/5 rounded-full blur-xl"></div>
-        <div class="flex justify-between items-start mb-1 sm:mb-2">
-          <span class="text-[10px] sm:text-xs font-semibold text-slate-400 uppercase tracking-wider">Выручка</span>
-          <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 font-bold">KZT</span>
-        </div>
-        <div class="text-lg sm:text-2xl lg:text-3xl font-black text-amber-400 tracking-tight truncate" id="kpi-revenue">0 ₸</div>
-        <div class="text-[10px] sm:text-xs text-slate-400 mt-1.5 flex items-center justify-between">
-          <span class="truncate">Ср: <b class="text-slate-200" id="kpi-revenue-avg">0 ₸</b></span>
-          <span class="text-slate-500 shrink-0 ml-1" id="kpi-days-count">0 дн.</span>
-        </div>
-      </div>
-
-      <!-- KPI 2: Чеки -->
-      <div class="bg-slate-900 border border-slate-800/90 rounded-xl sm:rounded-2xl p-3.5 sm:p-5 shadow-lg relative overflow-hidden">
-        <div class="absolute -right-3 -bottom-3 w-16 sm:w-20 h-16 sm:h-20 bg-blue-500/5 rounded-full blur-xl"></div>
-        <div class="flex justify-between items-start mb-1 sm:mb-2">
-          <span class="text-[10px] sm:text-xs font-semibold text-slate-400 uppercase tracking-wider">Чеков</span>
-          <span class="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 font-bold">Заказы</span>
-        </div>
-        <div class="text-lg sm:text-2xl lg:text-3xl font-black text-blue-400 tracking-tight" id="kpi-orders">0</div>
-        <div class="text-[10px] sm:text-xs text-slate-400 mt-1.5 flex items-center justify-between">
-          <span>В день: <b class="text-slate-200" id="kpi-orders-avg">0</b></span>
-          <span class="text-slate-500">Гостей: <b id="kpi-guests" class="text-slate-300">0</b></span>
-        </div>
-      </div>
-
-      <!-- KPI 3: Средний чек -->
-      <div class="bg-slate-900 border border-slate-800/90 rounded-xl sm:rounded-2xl p-3.5 sm:p-5 shadow-lg relative overflow-hidden">
-        <div class="absolute -right-3 -bottom-3 w-16 sm:w-20 h-16 sm:h-20 bg-purple-500/5 rounded-full blur-xl"></div>
-        <div class="flex justify-between items-start mb-1 sm:mb-2">
-          <span class="text-[10px] sm:text-xs font-semibold text-slate-400 uppercase tracking-wider">Ср. чек</span>
-          <span class="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 font-bold">AVG</span>
-        </div>
-        <div class="text-lg sm:text-2xl lg:text-3xl font-black text-purple-400 tracking-tight truncate" id="kpi-avg-check">0 ₸</div>
-        <div class="text-[10px] sm:text-xs text-slate-400 mt-1.5 flex items-center justify-between">
-          <span>Скидок:</span>
-          <span class="text-rose-400 font-medium truncate" id="kpi-discount">0 ₸</span>
-        </div>
-      </div>
-
-      <!-- KPI 4: Блюда -->
-      <div class="bg-slate-900 border border-slate-800/90 rounded-xl sm:rounded-2xl p-3.5 sm:p-5 shadow-lg relative overflow-hidden">
-        <div class="absolute -right-3 -bottom-3 w-16 sm:w-20 h-16 sm:h-20 bg-emerald-500/5 rounded-full blur-xl"></div>
-        <div class="flex justify-between items-start mb-1 sm:mb-2">
-          <span class="text-[10px] sm:text-xs font-semibold text-slate-400 uppercase tracking-wider">Блюд</span>
-          <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-bold">Шт.</span>
-        </div>
-        <div class="text-lg sm:text-2xl lg:text-3xl font-black text-emerald-400 tracking-tight truncate" id="kpi-dishes">0 шт.</div>
-        <div class="text-[10px] sm:text-xs text-slate-400 mt-1.5 flex items-center justify-between">
-          <span>В чеке:</span>
-          <span class="text-slate-200 font-semibold" id="kpi-dishes-per-order">0</span>
-        </div>
-      </div>
-
-    </div>
-
-    <!-- UPSELL & CROSS-SELL METRICS SECTION -->
-    <div class="bg-slate-900/95 border border-slate-800/90 rounded-xl sm:rounded-2xl p-4 sm:p-5 shadow-xl mb-4 sm:mb-6 relative overflow-hidden">
-      <div class="flex flex-wrap items-center justify-between gap-2 mb-3 sm:mb-4 border-b border-slate-800/80 pb-2.5">
-        <div class="flex items-center gap-2">
-          <span class="text-base sm:text-lg">🎯</span>
-          <div>
-            <h2 class="text-xs sm:text-sm font-extrabold text-white flex items-center gap-2">
-              Эффективность апсейла (допродаж) на точке
-              <span class="text-[9px] sm:text-[10px] bg-amber-500/10 text-amber-300 px-2 py-0.5 rounded-full border border-amber-500/20 font-bold" id="upsell-badge-status">
-                Расчет...
-              </span>
-            </h2>
-            <p class="text-[10px] sm:text-xs text-slate-400">Процент прикрепления напитков, соусов и модификаторов к основным блюдам</p>
-          </div>
-        </div>
-        <div class="text-right">
-          <span class="text-[10px] text-slate-400 block">Касса от апсейла:</span>
-          <span class="text-xs sm:text-sm font-bold text-amber-400" id="upsell-total-revenue">0 ₸</span>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        
-        <!-- Upsell 1: Напитки к основным блюдам -->
-        <div class="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5 flex flex-col justify-between">
-          <div>
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-[11px] font-bold text-sky-400 flex items-center gap-1">
-                <span>🥤</span> Напитки к блюдам
-              </span>
-              <span class="text-[10px] text-slate-400" id="upsell-drinks-count">0 шт.</span>
-            </div>
-            <div class="flex items-baseline gap-1.5 my-1.5">
-              <span class="text-xl sm:text-2xl font-black text-white" id="upsell-drinks-ratio">0%</span>
-              <span class="text-[10px] text-slate-400">по штукам</span>
-            </div>
-            <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden mb-2">
-              <div id="upsell-drinks-bar" class="h-full bg-sky-500 rounded-full transition-all duration-500" style="width: 0%"></div>
+      <div class="page-shell">
+        <header class="topbar">
+          <div class="topbar-left">
+            <button id="mobile-menu" class="icon-button mobile-only" type="button" aria-label="Открыть меню"><span>☰</span></button>
+            <div>
+              <p id="header-kicker" class="topbar-kicker">ЛИЧНЫЙ КАБИНЕТ</p>
+              <h2 id="page-title">Обзор</h2>
             </div>
           </div>
-          <div class="text-[10px] text-slate-400 border-t border-slate-800/60 pt-2 flex justify-between">
-            <span>Выручка: <b class="text-slate-200" id="upsell-drinks-sum">0 ₸</b></span>
-            <span class="text-sky-300 font-medium" id="upsell-drinks-rev-share">0%</span>
-          </div>
-        </div>
-
-        <!-- Upsell 2: Допы и соусы к основным блюдам -->
-        <div class="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5 flex flex-col justify-between">
-          <div>
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-[11px] font-bold text-amber-400 flex items-center gap-1">
-                <span>🧀</span> Допы и соусы
-              </span>
-              <span class="text-[10px] text-slate-400" id="upsell-addons-count">0 шт.</span>
-            </div>
-            <div class="flex items-baseline gap-1.5 my-1.5">
-              <span class="text-xl sm:text-2xl font-black text-white" id="upsell-addons-ratio">0%</span>
-              <span class="text-[10px] text-slate-400">по штукам</span>
-            </div>
-            <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden mb-2">
-              <div id="upsell-addons-bar" class="h-full bg-amber-500 rounded-full transition-all duration-500" style="width: 0%"></div>
+          <div class="topbar-actions">
+            <button id="refresh-button" class="icon-button" type="button" aria-label="Обновить данные" title="Обновить данные"><span>↻</span></button>
+            <div class="user-menu">
+              <div id="header-avatar" class="avatar avatar-small">—</div>
+              <div class="user-menu-copy"><strong id="header-name">—</strong><span id="header-role">—</span></div>
+              <button id="header-logout" class="text-button desktop-only" type="button">Выйти</button>
             </div>
           </div>
-          <div class="text-[10px] text-slate-400 border-t border-slate-800/60 pt-2 flex justify-between">
-            <span>Выручка: <b class="text-slate-200" id="upsell-addons-sum">0 ₸</b></span>
-            <span class="text-amber-300 font-medium" id="upsell-addons-rev-share">0%</span>
-          </div>
-        </div>
-
-        <!-- Upsell 3: Доля апсейла в кассе -->
-        <div class="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5 flex flex-col justify-between">
-          <div>
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-[11px] font-bold text-purple-400 flex items-center gap-1">
-                <span>💰</span> Доля в выручке
-              </span>
-              <span class="text-[10px] text-slate-400">Напитки + Допы</span>
-            </div>
-            <div class="flex items-baseline gap-1.5 my-1.5">
-              <span class="text-xl sm:text-2xl font-black text-white" id="upsell-share-pct">0%</span>
-              <span class="text-[10px] text-slate-400">от всей кассы</span>
-            </div>
-            <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden mb-2">
-              <div id="upsell-share-bar" class="h-full bg-purple-500 rounded-full transition-all duration-500" style="width: 0%"></div>
-            </div>
-          </div>
-          <div class="text-[10px] text-slate-400 border-t border-slate-800/60 pt-2 flex justify-between">
-            <span>Осн. блюда:</span>
-            <span class="text-slate-200 font-bold" id="upsell-main-count">0 шт.</span>
-          </div>
-        </div>
-
-        <!-- Upsell 4: Индекс конверсии точки -->
-        <div class="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5 flex flex-col justify-between">
-          <div>
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-[11px] font-bold text-emerald-400 flex items-center gap-1">
-                <span>⚡</span> Индекс допродаж
-              </span>
-              <span class="text-[10px] text-slate-400">Оценка точки</span>
-            </div>
-            <div class="text-base sm:text-lg font-black my-1 text-emerald-400" id="upsell-score-title">
-              ВЫСОКИЙ
-            </div>
-            <p class="text-[10px] text-slate-400 leading-tight mb-2" id="upsell-score-desc">
-              Кассиры активно предлагают напитки и добавки к каждому заказу.
-            </p>
-          </div>
-          <div class="text-[9px] text-slate-500 border-t border-slate-800/60 pt-1.5" id="upsell-target-hint">
-            Норматив сети: напитки ≥ 50%, допы ≥ 40%
-          </div>
-        </div>
-
+        </header>
+        <main id="main-content" class="main-content" tabindex="-1"></main>
       </div>
-    </div>
+      <nav id="mobile-nav" class="mobile-nav" aria-label="Мобильная навигация"></nav>
+    </section>
+  </div>
 
-    <!-- CHARTS ROW: DAILY & HOURLY -->
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 mb-4 sm:mb-6">
-      
-      <!-- Daily Sales Trend (2 cols) -->
-      <div class="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl sm:rounded-2xl p-4 sm:p-5 shadow-lg">
-        <div class="flex items-center justify-between mb-3">
-          <div>
-            <h2 class="text-xs sm:text-sm font-bold text-white flex items-center gap-1.5">
-              📈 Динамика продаж по дням
-            </h2>
-            <p class="text-[10px] sm:text-xs text-slate-400">Выручка и количество заказов</p>
-          </div>
-        </div>
-        <div class="h-48 sm:h-64 relative">
-          <canvas id="dailyChart"></canvas>
-        </div>
-      </div>
-
-      <!-- Hourly 24/7 Distribution (1 col) -->
-      <div class="bg-slate-900 border border-slate-800 rounded-xl sm:rounded-2xl p-4 sm:p-5 shadow-lg flex flex-col justify-between">
-        <div>
-          <h2 class="text-xs sm:text-sm font-bold text-white mb-0.5 flex items-center gap-1.5">
-            🌙 По часам (24/7)
-          </h2>
-          <p class="text-[10px] sm:text-xs text-slate-400 mb-2">Загрузка кухни и ночной трафик</p>
-          <div class="h-44 sm:h-56 relative">
-            <canvas id="hourlyChart"></canvas>
-          </div>
-        </div>
-        <div class="text-[10px] sm:text-[11px] text-slate-400 border-t border-slate-800/80 pt-2 mt-2" id="peak-hour-hint">
-          Пиковые часы загрузки рассчитываются автоматически
-        </div>
-      </div>
-
-    </div>
-
-    <!-- STAFF & CASH SHIFTS SECTION -->
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 mb-4 sm:mb-6">
-      
-      <!-- Employees / Cashiers Ranking -->
-      <div class="bg-slate-900 border border-slate-800 rounded-xl sm:rounded-2xl p-4 sm:p-5 shadow-lg">
-        <div class="flex items-center justify-between mb-3">
-          <div>
-            <h2 class="text-xs sm:text-sm font-bold text-white flex items-center gap-1.5">
-              👥 Сотрудники на кассе
-            </h2>
-            <p class="text-[10px] sm:text-xs text-slate-400">Личная выручка, чеки и средний чек</p>
-          </div>
-          <span class="text-[10px] sm:text-xs text-amber-400 font-semibold" id="cashiers-count">0 чел.</span>
-        </div>
-
-        <div class="overflow-x-auto max-h-64 sm:max-h-72 overflow-y-auto">
-          <table class="w-full text-xs text-left">
-            <thead class="bg-slate-950 text-slate-400 uppercase tracking-wider sticky top-0 text-[10px]">
-              <tr>
-                <th class="p-2 sm:p-2.5">Сотрудник</th>
-                <th class="p-2 sm:p-2.5 text-center">Апсейл (Нап / Доп)</th>
-                <th class="p-2 sm:p-2.5 text-right">Чеков</th>
-                <th class="p-2 sm:p-2.5 text-right">Выручка</th>
-              </tr>
-            </thead>
-            <tbody id="cashiers-table-body" class="divide-y divide-slate-800 text-slate-300">
-              <tr><td colspan="4" class="p-4 text-center text-slate-500">Загрузка данных...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Cash Shifts Journal -->
-      <div class="bg-slate-900 border border-slate-800 rounded-xl sm:rounded-2xl p-4 sm:p-5 shadow-lg">
-        <div class="flex items-center justify-between mb-3">
-          <div>
-            <h2 class="text-xs sm:text-sm font-bold text-white flex items-center gap-1.5">
-              🗓 Журнал кассовых смен
-            </h2>
-            <p class="text-[10px] sm:text-xs text-slate-400">Время смены, менеджер и выручка</p>
-          </div>
-          <span class="text-[10px] sm:text-xs text-blue-400 font-semibold" id="shifts-count">0 смен</span>
-        </div>
-
-        <div class="overflow-x-auto max-h-64 sm:max-h-72 overflow-y-auto">
-          <table class="w-full text-xs text-left">
-            <thead class="bg-slate-950 text-slate-400 uppercase tracking-wider sticky top-0 text-[10px]">
-              <tr>
-                <th class="p-2 sm:p-2.5">Смена</th>
-                <th class="p-2 sm:p-2.5">Открыта / Закрыта</th>
-                <th class="p-2 sm:p-2.5">Менеджер</th>
-                <th class="p-2 sm:p-2.5 text-right">Касса</th>
-              </tr>
-            </thead>
-            <tbody id="shifts-table-body" class="divide-y divide-slate-800 text-slate-300">
-              <tr><td colspan="4" class="p-4 text-center text-slate-500">Загрузка смен...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-    </div>
-
-    <!-- PAYMENTS, TOP DISHES & NETWORK RANKING -->
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
-      
-      <!-- Payments & Delivery -->
-      <div class="bg-slate-900 border border-slate-800 rounded-xl sm:rounded-2xl p-4 sm:p-5 shadow-lg">
-        <h2 class="text-xs sm:text-sm font-bold text-white mb-0.5 flex items-center gap-1.5">
-          💳 Способы оплаты и Доставка
-        </h2>
-        <p class="text-[10px] sm:text-xs text-slate-400 mb-3">Kaspi QR, Наличные, Агрегаторы</p>
-        
-        <div id="payments-list" class="space-y-2.5">
-          <p class="text-xs text-slate-500">Загрузка оплат...</p>
-        </div>
-      </div>
-
-      <!-- Top Dishes -->
-      <div class="bg-slate-900 border border-slate-800 rounded-xl sm:rounded-2xl p-4 sm:p-5 shadow-lg">
-        <h2 class="text-xs sm:text-sm font-bold text-white mb-0.5 flex items-center gap-1.5">
-          🥙 Топ-10 блюд по выручке
-        </h2>
-        <p class="text-[10px] sm:text-xs text-slate-400 mb-3">Хиты меню за период</p>
-        
-        <div class="overflow-y-auto max-h-72 sm:max-h-80">
-          <div id="dishes-list" class="space-y-1.5 sm:space-y-2">
-            <p class="text-xs text-slate-500">Загрузка блюд...</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Network Leaderboard -->
-      <div class="bg-slate-900 border border-slate-800 rounded-xl sm:rounded-2xl p-4 sm:p-5 shadow-lg">
-        <div class="flex items-center justify-between mb-0.5">
-          <h2 class="text-xs sm:text-sm font-bold text-white flex items-center gap-1.5">
-            🏆 Рейтинг сети «BURЖУЙ»
-          </h2>
-          <span class="text-[9px] bg-slate-800 px-1.5 py-0.5 rounded text-slate-400">Все точки</span>
-        </div>
-        <p class="text-[10px] sm:text-xs text-slate-400 mb-3">Нажмите на точку для перехода</p>
-
-        <div class="overflow-y-auto max-h-72 sm:max-h-80">
-          <div id="ranking-list" class="space-y-1.5 sm:space-y-2">
-            <p class="text-xs text-slate-500">Загрузка рейтинга...</p>
-          </div>
-        </div>
-      </div>
-
-    </div>
-
-  </main>
-
-  <!-- FOOTER -->
-  <footer class="border-t border-slate-800/90 py-3.5 px-4 text-center text-[10px] sm:text-xs text-slate-500 mt-6">
-    Сеть быстрого питания «BURЖУЙ» • Интеграция с iiko Server API
-  </footer>
-
-  <script src="/app.js"></script>
+  <div id="modal-root"></div>
+  <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="true"></div>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" integrity="sha384-NrKB+u6Ts6AtkIhwPixiKTzgSKNblyhlk0Sohlgar9UHUBzai/sgnNNWWd291xqt" crossorigin="anonymous" defer></script>
+  <script src="/app.js" defer></script>
 </body>
 </html>

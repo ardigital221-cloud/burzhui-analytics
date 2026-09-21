@@ -7,10 +7,18 @@ services:
     startCommand: npm start
     envVars:
       - key: IIKO_HOST
-        value: https://too-burzhui-co.iiko.it
+        sync: false
       - key: IIKO_LOGIN
-        value: Belyi
+        sync: false
       - key: IIKO_PASSWORD
-        value: 19062025
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: APP_ADMIN_USERNAME
+        sync: false
+      - key: APP_ADMIN_PASSWORD
+        sync: false
+      - key: APP_ADMIN_NAME
+        sync: false
       - key: NODE_ENV
         value: production

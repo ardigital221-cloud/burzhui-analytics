@@ -36,8 +36,9 @@
 
 ## 🛠 Стек технологий
 
-* **Backend:** Node.js (Express / HTTP) с кэшированием токенов iiko и запросами к Resto OLAP API.
-* **Frontend:** Responsive SPA (Tailwind CSS, Chart.js, Vanilla JS).
+* **Backend:** Node.js и Express с PostgreSQL, защищёнными личными кабинетами, задачами и кэшированием токенов iiko.
+* **Безопасность:** HttpOnly-сессии на SHA-256, scrypt-пароли, RBAC, same-origin для mutating API, Helmet/CSP и rate limit входа.
+* **Frontend:** Mobile-first SPA на чистом CSS, Chart.js и Vanilla JS.
 * **Хостинг:** Render.com (готов к развертыванию через `render.yaml`).
 
 ---
@@ -46,10 +47,14 @@
 
 | Переменная | Описание | Пример |
 | :--- | :--- | :--- |
-| `IIKO_HOST` | URL сервера iiko | `https://too-burzhui-co.iiko.it` |
-| `IIKO_LOGIN` | Логин пользователя iiko с доступом к API | `Belyi` |
-| `IIKO_PASSWORD` | Пароль пользователя iiko | `********` |
-| `PORT` | Порт локального веб-сервера | `3000` (на Render выставляется `10000`) |
+| `DATABASE_URL` | PostgreSQL connection string | `postgresql://user:password@localhost:5432/burzhui` |
+| `IIKO_HOST` | URL сервера iiko | `https://your-iiko-host.example` |
+| `IIKO_LOGIN` | Логин пользователя iiko с доступом к API | `your_iiko_login` |
+| `IIKO_PASSWORD` | Пароль пользователя iiko | `replace_with_iiko_password` |
+| `APP_ADMIN_USERNAME` | Логин первого developer | `admin` |
+| `APP_ADMIN_PASSWORD` | Пароль первого developer, минимум 8 символов | `replace_with_long_random_password` |
+| `APP_ADMIN_NAME` | Имя первого developer | `BURЖУЙ Administrator` |
+| `PORT` | Порт локального веб-сервера | `3000` |
 
 ---
 
@@ -63,6 +68,7 @@ cd burzhui-analytics
 # Установить зависимости (если есть npm)
 npm install
 
+# Скопировать .env.example в .env и заполнить локальными значениями.
 # Запустить сервер
 npm start
 ```
