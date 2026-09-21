@@ -254,7 +254,7 @@ async function handleSales(req, res, urlObj) {
       filters: baseFilter
     };
 
-    // 5. Cashiers
+    // 5. Cashiers Summary
     const bodyCashiers = {
       reportType: "SALES",
       buildSummary: false,
@@ -263,14 +263,34 @@ async function handleSales(req, res, urlObj) {
       filters: baseFilter
     };
 
+    // 6. Upsell Categories (Main dishes, Drinks, Add-ons)
+    const bodyUpsell = {
+      reportType: "SALES",
+      buildSummary: false,
+      groupByRowFields: ["DishGroup.TopParent", "DishType"],
+      aggregateFields: ["DishAmountInt", "DishDiscountSumInt"],
+      filters: baseFilter
+    };
+
+    // 7. Cashier Items (Upsell by employee)
+    const bodyCashierItems = {
+      reportType: "SALES",
+      buildSummary: false,
+      groupByRowFields: ["Cashier", "DishGroup.TopParent", "DishType"],
+      aggregateFields: ["DishAmountInt", "DishDiscountSumInt"],
+      filters: baseFilter
+    };
+
     const headers = { 'Content-Type': 'application/json' };
 
-    const [resDaily, resPay, resDishes, resHourly, resCashiers] = await Promise.all([
+    const [resDaily, resPay, resDishes, resHourly, resCashiers, resUpsell, resCashierItems] = await Promise.all([
       iikoFetch('/resto/api/v2/reports/olap', { method: 'POST', headers }, JSON.stringify(bodyDaily)),
       iikoFetch('/resto/api/v2/reports/olap', { method: 'POST', headers }, JSON.stringify(bodyPay)),
       iikoFetch('/resto/api/v2/reports/olap', { method: 'POST', headers }, JSON.stringify(bodyDishes)),
       iikoFetch('/resto/api/v2/reports/olap', { method: 'POST', headers }, JSON.stringify(bodyHourly)),
-      iikoFetch('/resto/api/v2/reports/olap', { method: 'POST', headers }, JSON.stringify(bodyCashiers))
+      iikoFetch('/resto/api/v2/reports/olap', { method: 'POST', headers }, JSON.stringify(bodyCashiers)),
+      iikoFetch('/resto/api/v2/reports/olap', { method: 'POST', headers }, JSON.stringify(bodyUpsell)),
+      iikoFetch('/resto/api/v2/reports/olap', { method: 'POST', headers }, JSON.stringify(bodyCashierItems))
     ]);
 
     const dailyData = (JSON.parse(resDaily.body || '{}').data || []).sort((a, b) => a['OpenDate.Typed'].localeCompare(b['OpenDate.Typed']));
@@ -278,6 +298,71 @@ async function handleSales(req, res, urlObj) {
     const dishesData = (JSON.parse(resDishes.body || '{}').data || []).sort((a, b) => (b['DishDiscountSumInt'] || 0) - (a['DishDiscountSumInt'] || 0));
     const hourlyRaw = JSON.parse(resHourly.body || '{}').data || [];
     const cashiersData = (JSON.parse(resCashiers.body || '{}').data || []).sort((a, b) => (b['DishDiscountSumInt'] || 0) - (a['DishDiscountSumInt'] || 0));
+    const upsellRaw = JSON.parse(resUpsell.body || '{}').data || [];
+    const cashierItemsRaw = JSON.parse(resCashierItems.body || '{}').data || [];
+
+    // Calculate Point-Level Upsell Metrics
+    let mainDishesCount = 0;
+    let mainDishesRevenue = 0;
+    let drinksCount = 0;
+    let drinksRevenue = 0;
+    let addonsCount = 0;
+    let addonsRevenue = 0;
+
+    upsellRaw.forEach(item => {
+      const topGroup = String(item['DishGroup.TopParent'] || '');
+      const type = String(item['DishType'] || '');
+      const amount = Number(item['DishAmountInt'] || 0);
+      const revenue = Number(item['DishDiscountSumInt'] || 0);
+
+      if (topGroup.includes('Напитки') || topGroup.toLowerCase().includes('коктейл')) {
+        drinksCount += amount;
+        drinksRevenue += revenue;
+      } else if (topGroup.includes('Модификаторы') || type === 'MODIFIER' || topGroup.includes('УБРАТЬ')) {
+        addonsCount += amount;
+        addonsRevenue += revenue;
+      } else if (!topGroup.includes('Сервисный сбор')) {
+        mainDishesCount += amount;
+        mainDishesRevenue += revenue;
+      }
+    });
+
+    const drinkRatioQty = mainDishesCount > 0 ? ((drinksCount / mainDishesCount) * 100).toFixed(1) : '0';
+    const drinkRatioRev = mainDishesRevenue > 0 ? ((drinksRevenue / mainDishesRevenue) * 100).toFixed(1) : '0';
+    const addonRatioQty = mainDishesCount > 0 ? ((addonsCount / mainDishesCount) * 100).toFixed(1) : '0';
+    const addonRatioRev = mainDishesRevenue > 0 ? ((addonsRevenue / mainDishesRevenue) * 100).toFixed(1) : '0';
+    const totalUpsellRev = drinksRevenue + addonsRevenue;
+
+    // Calculate Cashier-Level Upsell
+    const cashierUpsellMap = {};
+    cashierItemsRaw.forEach(row => {
+      const c = row['Cashier'] || 'Не указан';
+      if (!cashierUpsellMap[c]) {
+        cashierUpsellMap[c] = { main: 0, drinks: 0, addons: 0 };
+      }
+      const topGroup = String(row['DishGroup.TopParent'] || '');
+      const type = String(row['DishType'] || '');
+      const amount = Number(row['DishAmountInt'] || 0);
+
+      if (topGroup.includes('Напитки') || topGroup.toLowerCase().includes('коктейл')) {
+        cashierUpsellMap[c].drinks += amount;
+      } else if (topGroup.includes('Модификаторы') || type === 'MODIFIER' || topGroup.includes('УБРАТЬ')) {
+        cashierUpsellMap[c].addons += amount;
+      } else if (!topGroup.includes('Сервисный сбор')) {
+        cashierUpsellMap[c].main += amount;
+      }
+    });
+
+    // Enrich cashiers data
+    cashiersData.forEach(c => {
+      const name = c['Cashier'] || 'Не указан';
+      const stats = cashierUpsellMap[name] || { main: 0, drinks: 0, addons: 0 };
+      c.mainCount = stats.main;
+      c.drinkCount = stats.drinks;
+      c.addonCount = stats.addons;
+      c.drinkRate = stats.main > 0 ? ((stats.drinks / stats.main) * 100).toFixed(1) : '0';
+      c.addonRate = stats.main > 0 ? ((stats.addons / stats.main) * 100).toFixed(1) : '0';
+    });
 
     // Aggregate KPI totals
     let totalRevenue = 0;
@@ -330,6 +415,20 @@ async function handleSales(req, res, urlObj) {
         daysCount: dailyData.length
       },
       daily: dailyData,
+      upsell: {
+        mainDishesCount,
+        mainDishesRevenue,
+        drinksCount,
+        drinksRevenue,
+        drinkRatioQty,
+        drinkRatioRev,
+        addonsCount,
+        addonsRevenue,
+        addonRatioQty,
+        addonRatioRev,
+        totalUpsellRev,
+        upsellShare: totalRevenue > 0 ? ((totalUpsellRev / totalRevenue) * 100).toFixed(1) : '0'
+      },
       payments: payData.sort((a, b) => (b.DishDiscountSumInt || 0) - (a.DishDiscountSumInt || 0)),
       topDishes: dishesData.slice(0, 20),
       hourly: hourlyList,
