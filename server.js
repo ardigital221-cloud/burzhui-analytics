@@ -26,7 +26,9 @@ const IIKO_LOGIN = process.env.IIKO_LOGIN;
 const IIKO_PASSWORD = process.env.IIKO_PASSWORD;
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: IS_PRODUCTION ? true : undefined,
+  // Render's private Postgres endpoint presents a platform-managed self-signed chain.
+  // Traffic remains inside Render's private network; certificate verification must be disabled there.
+  ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined,
   max: 10,
   idleTimeoutMillis: 30000
 });
