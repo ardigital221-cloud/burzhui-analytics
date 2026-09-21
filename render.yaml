@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: burzhui-analytics
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: IIKO_HOST
+        value: https://too-burzhui-co.iiko.it
+      - key: IIKO_LOGIN
+        value: Belyi
+      - key: IIKO_PASSWORD
+        value: 19062025
+      - key: NODE_ENV
+        value: production
