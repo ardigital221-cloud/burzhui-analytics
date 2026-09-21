@@ -219,14 +219,15 @@ async function fetchData() {
 
     hideLoading();
 
-    // 1. Render KPIs
+    // 1. Render KPIs & Upsell
     renderKPIs(salesRes.kpi);
+    renderUpsell(salesRes.upsell, salesRes.kpi);
 
     // 2. Render Charts
     renderDailyChart(salesRes.daily);
     renderHourlyChart(salesRes.hourly);
 
-    // 3. Render Cashiers Table
+    // 3. Render Cashiers Table (with Upsell conversion)
     renderCashiers(salesRes.cashiers, salesRes.kpi.totalRevenue);
 
     // 4. Render Shifts Table
@@ -265,6 +266,59 @@ function renderKPIs(kpi) {
   document.getElementById('kpi-dishes').textContent = formatNumber(kpi.totalDishes) + ' шт.';
   const perOrder = kpi.totalOrders > 0 ? (kpi.totalDishes / kpi.totalOrders).toFixed(1) : '0';
   document.getElementById('kpi-dishes-per-order').textContent = `${perOrder} шт.`;
+}
+
+function renderUpsell(upsell, kpi) {
+  if (!upsell) return;
+
+  const drinksRatio = Number(upsell.drinkRatioQty) || 0;
+  const addonsRatio = Number(upsell.addonRatioQty) || 0;
+  const upsellShare = Number(upsell.upsellShare) || 0;
+
+  // 1. Drinks to main dishes
+  document.getElementById('upsell-drinks-ratio').textContent = `${drinksRatio}%`;
+  document.getElementById('upsell-drinks-count').textContent = `${formatNumber(upsell.drinksCount)} шт.`;
+  document.getElementById('upsell-drinks-sum').textContent = formatMoney(upsell.drinksRevenue);
+  document.getElementById('upsell-drinks-rev-share').textContent = `${upsell.drinkRatioRev}% к блюдам`;
+  document.getElementById('upsell-drinks-bar').style.width = `${Math.min(100, Math.max(5, drinksRatio))}%`;
+
+  // 2. Add-ons to main dishes
+  document.getElementById('upsell-addons-ratio').textContent = `${addonsRatio}%`;
+  document.getElementById('upsell-addons-count').textContent = `${formatNumber(upsell.addonsCount)} шт.`;
+  document.getElementById('upsell-addons-sum').textContent = formatMoney(upsell.addonsRevenue);
+  document.getElementById('upsell-addons-rev-share').textContent = `${upsell.addonRatioRev}% к блюдам`;
+  document.getElementById('upsell-addons-bar').style.width = `${Math.min(100, Math.max(5, addonsRatio))}%`;
+
+  // 3. Upsell share in total revenue
+  document.getElementById('upsell-share-pct').textContent = `${upsellShare}%`;
+  document.getElementById('upsell-share-bar').style.width = `${Math.min(100, Math.max(5, upsellShare * 2.5))}%`;
+  document.getElementById('upsell-main-count').textContent = `${formatNumber(upsell.mainDishesCount)} шт.`;
+  document.getElementById('upsell-total-revenue').textContent = formatMoney(upsell.totalUpsellRev);
+
+  // 4. Score and Status Badge
+  const statusEl = document.getElementById('upsell-badge-status');
+  const titleEl = document.getElementById('upsell-score-title');
+  const descEl = document.getElementById('upsell-score-desc');
+
+  if (drinksRatio >= 55 && addonsRatio >= 40) {
+    statusEl.className = 'text-[9px] sm:text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-500/30 font-bold';
+    statusEl.textContent = 'Высокая конверсия';
+    titleEl.className = 'text-base sm:text-lg font-black my-1 text-emerald-400';
+    titleEl.textContent = '🟢 ВЫСОКИЙ';
+    descEl.textContent = `Отличные допродажи: на 100 блюд продается ${Math.round(drinksRatio)} напитков и ${Math.round(addonsRatio)} соусов/допов.`;
+  } else if (drinksRatio >= 40 || addonsRatio >= 30) {
+    statusEl.className = 'text-[9px] sm:text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full border border-amber-500/30 font-bold';
+    statusEl.textContent = 'Средняя конверсия';
+    titleEl.className = 'text-base sm:text-lg font-black my-1 text-amber-400';
+    titleEl.textContent = '🟡 ХОРОШИЙ';
+    descEl.textContent = `Стабильный результат, но есть резерв роста (норматив сети: напитки ≥ 55%, допы ≥ 45%).`;
+  } else {
+    statusEl.className = 'text-[9px] sm:text-[10px] bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded-full border border-rose-500/30 font-bold';
+    statusEl.textContent = 'Низкая конверсия';
+    titleEl.className = 'text-base sm:text-lg font-black my-1 text-rose-400';
+    titleEl.textContent = '🔴 ТРЕБУЕТ ВНИМАНИЯ';
+    descEl.textContent = `Низкий процент допродаж. Рекомендуется напомнить персоналу о скриптах предложения напитка и соуса.`;
+  }
 }
 
 function renderDailyChart(daily) {
@@ -448,7 +502,16 @@ function renderCashiers(cashiers, totalRev) {
     const rev = c.DishDiscountSumInt || 0;
     const orders = c.UniqOrderId || 0;
     const avg = c['DishDiscountSumInt.average'] || (orders > 0 ? rev / orders : 0);
-    const share = totalRev > 0 ? ((rev / totalRev) * 100).toFixed(1) : '0';
+    const drinkRate = Number(c.drinkRate) || 0;
+    const addonRate = Number(c.addonRate) || 0;
+
+    let drinkColor = 'bg-slate-800 text-slate-400 border border-slate-700';
+    if (drinkRate >= 55) drinkColor = 'bg-sky-500/20 text-sky-300 border border-sky-500/30';
+    else if (drinkRate >= 40) drinkColor = 'bg-amber-500/20 text-amber-300 border border-amber-500/30';
+
+    let addonColor = 'bg-slate-800 text-slate-400 border border-slate-700';
+    if (addonRate >= 60) addonColor = 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+    else if (addonRate >= 40) addonColor = 'bg-amber-500/20 text-amber-300 border border-amber-500/30';
 
     const tr = document.createElement('tr');
     tr.className = 'hover:bg-slate-800/50 transition-colors';
@@ -462,13 +525,27 @@ function renderCashiers(cashiers, totalRev) {
       <td class="p-2 sm:p-2.5">
         <div class="font-semibold text-white flex items-center gap-1 text-[11px] sm:text-xs">
           <span>${badge}</span>
-          <span class="truncate max-w-[110px] sm:max-w-none">${c.Cashier || 'Не указан'}</span>
+          <span class="truncate max-w-[105px] sm:max-w-none">${c.Cashier || 'Не указан'}</span>
         </div>
-        <span class="text-[9px] sm:text-[10px] text-slate-500 block">Таб: ${c['Cashier.Code'] || '—'} • ${share}%</span>
+        <span class="text-[9px] sm:text-[10px] text-slate-500 block">Блюд: ${c.mainCount || 0} шт. • Таб: ${c['Cashier.Code'] || '—'}</span>
       </td>
-      <td class="p-2 sm:p-2.5 text-right font-medium text-slate-300 text-[11px] sm:text-xs">${formatNumber(orders)}</td>
-      <td class="p-2 sm:p-2.5 text-right font-medium text-purple-300 text-[11px] sm:text-xs">${formatMoney(avg)}</td>
-      <td class="p-2 sm:p-2.5 text-right font-bold text-amber-400 text-[11px] sm:text-xs">${formatMoney(rev)}</td>
+      <td class="p-2 sm:p-2.5 text-center">
+        <div class="flex flex-col sm:flex-row items-center justify-center gap-1">
+          <span class="text-[9px] sm:text-[10px] px-1.5 py-0.5 rounded font-bold ${drinkColor}" title="Прикрепление напитков">
+            🥤 ${drinkRate}%
+          </span>
+          <span class="text-[9px] sm:text-[10px] px-1.5 py-0.5 rounded font-bold ${addonColor}" title="Прикрепление допов">
+            🧀 ${addonRate}%
+          </span>
+        </div>
+      </td>
+      <td class="p-2 sm:p-2.5 text-right font-medium text-slate-300 text-[11px] sm:text-xs">
+        <div>${formatNumber(orders)}</div>
+        <div class="text-[9px] text-purple-300">${formatMoney(avg)}</div>
+      </td>
+      <td class="p-2 sm:p-2.5 text-right font-bold text-amber-400 text-[11px] sm:text-xs">
+        ${formatMoney(rev)}
+      </td>
     `;
     tbody.appendChild(tr);
   });
