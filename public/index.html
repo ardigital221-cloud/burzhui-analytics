@@ -230,6 +230,122 @@
 
     </div>
 
+    <!-- UPSELL & CROSS-SELL METRICS SECTION -->
+    <div class="bg-slate-900/95 border border-slate-800/90 rounded-xl sm:rounded-2xl p-4 sm:p-5 shadow-xl mb-4 sm:mb-6 relative overflow-hidden">
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-3 sm:mb-4 border-b border-slate-800/80 pb-2.5">
+        <div class="flex items-center gap-2">
+          <span class="text-base sm:text-lg">🎯</span>
+          <div>
+            <h2 class="text-xs sm:text-sm font-extrabold text-white flex items-center gap-2">
+              Эффективность апсейла (допродаж) на точке
+              <span class="text-[9px] sm:text-[10px] bg-amber-500/10 text-amber-300 px-2 py-0.5 rounded-full border border-amber-500/20 font-bold" id="upsell-badge-status">
+                Расчет...
+              </span>
+            </h2>
+            <p class="text-[10px] sm:text-xs text-slate-400">Процент прикрепления напитков, соусов и модификаторов к основным блюдам</p>
+          </div>
+        </div>
+        <div class="text-right">
+          <span class="text-[10px] text-slate-400 block">Касса от апсейла:</span>
+          <span class="text-xs sm:text-sm font-bold text-amber-400" id="upsell-total-revenue">0 ₸</span>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        
+        <!-- Upsell 1: Напитки к основным блюдам -->
+        <div class="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-[11px] font-bold text-sky-400 flex items-center gap-1">
+                <span>🥤</span> Напитки к блюдам
+              </span>
+              <span class="text-[10px] text-slate-400" id="upsell-drinks-count">0 шт.</span>
+            </div>
+            <div class="flex items-baseline gap-1.5 my-1.5">
+              <span class="text-xl sm:text-2xl font-black text-white" id="upsell-drinks-ratio">0%</span>
+              <span class="text-[10px] text-slate-400">по штукам</span>
+            </div>
+            <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden mb-2">
+              <div id="upsell-drinks-bar" class="h-full bg-sky-500 rounded-full transition-all duration-500" style="width: 0%"></div>
+            </div>
+          </div>
+          <div class="text-[10px] text-slate-400 border-t border-slate-800/60 pt-2 flex justify-between">
+            <span>Выручка: <b class="text-slate-200" id="upsell-drinks-sum">0 ₸</b></span>
+            <span class="text-sky-300 font-medium" id="upsell-drinks-rev-share">0%</span>
+          </div>
+        </div>
+
+        <!-- Upsell 2: Допы и соусы к основным блюдам -->
+        <div class="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-[11px] font-bold text-amber-400 flex items-center gap-1">
+                <span>🧀</span> Допы и соусы
+              </span>
+              <span class="text-[10px] text-slate-400" id="upsell-addons-count">0 шт.</span>
+            </div>
+            <div class="flex items-baseline gap-1.5 my-1.5">
+              <span class="text-xl sm:text-2xl font-black text-white" id="upsell-addons-ratio">0%</span>
+              <span class="text-[10px] text-slate-400">по штукам</span>
+            </div>
+            <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden mb-2">
+              <div id="upsell-addons-bar" class="h-full bg-amber-500 rounded-full transition-all duration-500" style="width: 0%"></div>
+            </div>
+          </div>
+          <div class="text-[10px] text-slate-400 border-t border-slate-800/60 pt-2 flex justify-between">
+            <span>Выручка: <b class="text-slate-200" id="upsell-addons-sum">0 ₸</b></span>
+            <span class="text-amber-300 font-medium" id="upsell-addons-rev-share">0%</span>
+          </div>
+        </div>
+
+        <!-- Upsell 3: Доля апсейла в кассе -->
+        <div class="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-[11px] font-bold text-purple-400 flex items-center gap-1">
+                <span>💰</span> Доля в выручке
+              </span>
+              <span class="text-[10px] text-slate-400">Напитки + Допы</span>
+            </div>
+            <div class="flex items-baseline gap-1.5 my-1.5">
+              <span class="text-xl sm:text-2xl font-black text-white" id="upsell-share-pct">0%</span>
+              <span class="text-[10px] text-slate-400">от всей кассы</span>
+            </div>
+            <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden mb-2">
+              <div id="upsell-share-bar" class="h-full bg-purple-500 rounded-full transition-all duration-500" style="width: 0%"></div>
+            </div>
+          </div>
+          <div class="text-[10px] text-slate-400 border-t border-slate-800/60 pt-2 flex justify-between">
+            <span>Осн. блюда:</span>
+            <span class="text-slate-200 font-bold" id="upsell-main-count">0 шт.</span>
+          </div>
+        </div>
+
+        <!-- Upsell 4: Индекс конверсии точки -->
+        <div class="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-[11px] font-bold text-emerald-400 flex items-center gap-1">
+                <span>⚡</span> Индекс допродаж
+              </span>
+              <span class="text-[10px] text-slate-400">Оценка точки</span>
+            </div>
+            <div class="text-base sm:text-lg font-black my-1 text-emerald-400" id="upsell-score-title">
+              ВЫСОКИЙ
+            </div>
+            <p class="text-[10px] text-slate-400 leading-tight mb-2" id="upsell-score-desc">
+              Кассиры активно предлагают напитки и добавки к каждому заказу.
+            </p>
+          </div>
+          <div class="text-[9px] text-slate-500 border-t border-slate-800/60 pt-1.5" id="upsell-target-hint">
+            Норматив сети: напитки ≥ 50%, допы ≥ 40%
+          </div>
+        </div>
+
+      </div>
+    </div>
+
     <!-- CHARTS ROW: DAILY & HOURLY -->
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 mb-4 sm:mb-6">
       
@@ -286,8 +402,8 @@
             <thead class="bg-slate-950 text-slate-400 uppercase tracking-wider sticky top-0 text-[10px]">
               <tr>
                 <th class="p-2 sm:p-2.5">Сотрудник</th>
+                <th class="p-2 sm:p-2.5 text-center">Апсейл (Нап / Доп)</th>
                 <th class="p-2 sm:p-2.5 text-right">Чеков</th>
-                <th class="p-2 sm:p-2.5 text-right">Ср. чек</th>
                 <th class="p-2 sm:p-2.5 text-right">Выручка</th>
               </tr>
             </thead>
