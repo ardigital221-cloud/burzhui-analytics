@@ -2410,6 +2410,16 @@ function TeamView({
   const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<User | null>(null);
+  const scopeLabel = (member: User) =>
+    member.all_departments
+      ? "Все точки"
+      : userDepartmentIds(member)
+          .map((id) => departments.find((item) => item.id === id)?.name || id)
+          .join(", ") || member.department_name || "Точки не назначены";
+  const editMember = (member: User) => {
+    setEditing(member);
+    setOpen(true);
+  };
   const load = () => {
     setLoading(true);
     Promise.all([
@@ -2458,7 +2468,45 @@ function TeamView({
             ))}
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          <div className="divide-y md:hidden">
+            {users.map((member) => (
+              <div className="space-y-3 p-4" key={member.id}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <Avatar size="sm">
+                      <AvatarFallback>{initials(member.full_name)}</AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-bold">{member.full_name}</div>
+                      <div className="text-xs text-muted-foreground">@{member.username}</div>
+                    </div>
+                  </div>
+                  <Badge variant={member.role === "developer" ? "default" : "outline"}>
+                    {roleName(member.role)}
+                  </Badge>
+                </div>
+                <div className="rounded-xl bg-muted/50 p-3 text-xs leading-5">
+                  <div className="font-semibold text-muted-foreground">Доступ к точкам</div>
+                  <div className="line-clamp-2 font-semibold">{scopeLabel(member)}</div>
+                  {member.iiko_employee_code && (
+                    <div className="mt-1 text-muted-foreground">iiko: {member.iiko_employee_code}</div>
+                  )}
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <Badge variant={member.active ? "secondary" : "destructive"}>
+                    {member.active ? "Активен" : "Отключён"}
+                  </Badge>
+                  {(user.role === "developer" || member.role === "employee") && (
+                    <Button variant="outline" size="sm" onClick={() => editMember(member)}>
+                      <Pencil className="size-4" /> Изменить
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="hidden overflow-x-auto md:block">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -2500,11 +2548,9 @@ function TeamView({
                       </Badge>
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
-                      {member.all_departments
-                        ? "Все точки"
-                        : member.department_ids?.length
-                          ? `${member.department_ids.length} точек`
-                          : member.department_name || "Точки не назначены"}
+                      <span className="block max-w-[220px] truncate" title={scopeLabel(member)}>
+                        {scopeLabel(member)}
+                      </span>
                     </TableCell>
                     <TableCell>{member.iiko_employee_code || "—"}</TableCell>
                     <TableCell>
@@ -2521,10 +2567,7 @@ function TeamView({
                           size="icon-sm"
                           variant="ghost"
                           aria-label={`Изменить ${member.full_name}`}
-                          onClick={() => {
-                            setEditing(member);
-                            setOpen(true);
-                          }}
+                          onClick={() => editMember(member)}
                         >
                           <Pencil className="size-4" />
                         </Button>
@@ -2535,6 +2578,7 @@ function TeamView({
               </TableBody>
             </Table>
           </div>
+          </>
         )}
         {!loading && !users.length && (
           <div className="p-5">
