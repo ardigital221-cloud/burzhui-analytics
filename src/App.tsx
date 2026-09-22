@@ -2718,18 +2718,24 @@ function UserDialog({
     setBusy(true);
     setError("");
     const form = new FormData(event.currentTarget);
-    const effectiveAllDepartments = isNetworkRole(role) || allDepartments;
+    const effectiveAllDepartments =
+      isNetworkRole(role) ||
+      (allDepartments && (currentUser.role === "developer" || Boolean(currentUser.all_departments)));
+    const effectiveDepartmentIds =
+      allDepartments && currentUser.role === "manager" && !currentUser.all_departments
+        ? availableDepartments.map((item) => item.id)
+        : selectedDepartmentIds;
     const payload = {
       full_name: String(form.get("full_name") || ""),
       username: String(form.get("username") || ""),
       password: String(form.get("password") || "") || undefined,
       role,
-      department_ids: effectiveAllDepartments ? [] : selectedDepartmentIds,
+      department_ids: effectiveAllDepartments ? [] : effectiveDepartmentIds,
       all_departments: effectiveAllDepartments,
-      department_id: effectiveAllDepartments ? null : selectedDepartmentIds[0] || null,
+      department_id: effectiveAllDepartments ? null : effectiveDepartmentIds[0] || null,
       department_name: effectiveAllDepartments
         ? null
-        : departments.find((item) => item.id === selectedDepartmentIds[0])
+        : departments.find((item) => item.id === effectiveDepartmentIds[0])
             ?.name || null,
       iiko_employee_name: String(form.get("iiko_employee_name") || "") || null,
       iiko_employee_code: String(form.get("iiko_employee_code") || "") || null,
