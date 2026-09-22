@@ -248,7 +248,7 @@ const navItems: {
     id: "analytics",
     label: "Аналитика",
     icon: BarChart3,
-    roles: ["developer", "supervisor", "manager"],
+    roles: ["developer", "supervisor"],
   },
   {
     id: "profile",
@@ -706,7 +706,7 @@ function App() {
               onNotice={setNotice}
             />
           )}
-          {view === "analytics" && (
+          {view === "analytics" && isNetworkRole(user.role) && (
             <AnalyticsView user={user} refreshKey={refreshKey} />
           )}
           {view === "profile" && (
@@ -1154,6 +1154,8 @@ function OverviewView({
         ? api<Record<string, unknown>>(
             `/api/my-metrics?from=${daysAgo(6)}&to=${today()}`,
           ).then(normalizeMyMetrics)
+        : user.role === "manager"
+          ? Promise.resolve(null)
         : api<Record<string, unknown>>(
             `/api/sales?departmentId=${encodeURIComponent(departmentParamForUser(user))}&from=${daysAgo(6)}&to=${today()}`,
           ).then(normalizeSales);
@@ -1183,6 +1185,65 @@ function OverviewView({
     name: row.date ? formatDate(row.date) : "—",
     value: row.revenue || 0,
   }));
+  if (user.role === "manager") {
+    return (
+      <>
+        <PageIntro
+          eyebrow="Сегодня в работе"
+          title={`Обзор, ${user.full_name.split(" ")[0]}`}
+          description="Ваши задачи, сотрудники и результат команды в назначенных точках."
+          action={
+            <Button className="gap-2" onClick={() => onNavigate("tasks")}>
+              <Plus className="size-4" /> Новая задача
+            </Button>
+          }
+        />
+        {error && (
+          <Alert variant="destructive" className="mb-5">
+            <X className="size-4" />
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+        {loading ? <OverviewSkeleton /> : (
+          <>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <KpiCard icon={ClipboardCheck} label="Открытые задачи" value={formatNumber(openTasks)} detail="В назначенных точках" tone="primary" />
+              <KpiCard icon={Clock3} label="На проверке" value={formatNumber(stats?.review || 0)} detail="Ожидают решения" />
+              <KpiCard icon={Check} label="Готово" value={formatNumber(doneTasks)} detail="Завершённые задачи" tone="soft" />
+            </div>
+            <div className="mt-5 grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
+              <RecentTasks tasks={tasks.slice(0, 5)} onOpen={() => onNavigate("tasks")} />
+              <Card className="surface">
+                <CardHeader>
+                  <CardTitle>Фокус команды</CardTitle>
+                  <CardDescription>Статусы задач на сейчас</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  {(["new", "in_progress", "review", "done"] as TaskStatus[]).map((status) => {
+                    const count = tasks.filter((task) => task.status === status).length;
+                    return (
+                      <div key={status}>
+                        <div className="mb-2 flex items-center justify-between text-sm">
+                          <span className="font-semibold">{statusLabels[status]}</span>
+                          <span className="text-muted-foreground">{count}</span>
+                        </div>
+                        <Progress value={tasks.length ? Math.round((count / tasks.length) * 100) : 0} className="gap-0" />
+                      </div>
+                    );
+                  })}
+                </CardContent>
+                <CardFooter className="border-t pt-4">
+                  <Button variant="ghost" className="w-full justify-between" onClick={() => onNavigate("tasks")}>
+                    Открыть все задачи <ChevronRight className="size-4" />
+                  </Button>
+                </CardFooter>
+              </Card>
+            </div>
+          </>
+        )}
+      </>
+    );
+  }
   return (
     <>
       <PageIntro

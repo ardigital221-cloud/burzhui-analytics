@@ -549,9 +549,9 @@ app.get('/api/task-stats', authMiddleware, asyncHandler(async (req, res) => {
 }));
 
 app.get('/api/departments', authMiddleware, requireRoles('developer', 'supervisor', 'manager'), asyncHandler(async (req, res) => { const departments = await fetchDepartments(); const scope = userScope(req.user); return res.json({ success: true, departments: scope.all ? departments : departments.filter((item) => scope.ids.includes(item.id)) }); }));
-app.get('/api/sales', authMiddleware, requireRoles('developer', 'supervisor', 'manager'), asyncHandler(async (req, res) => res.json(await fetchSales(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query)))));
-app.get('/api/shifts', authMiddleware, requireRoles('developer', 'supervisor', 'manager'), asyncHandler(async (req, res) => res.json(await fetchShifts(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query)))));
-app.get('/api/ranking', authMiddleware, requireRoles('developer', 'supervisor', 'manager'), asyncHandler(async (req, res) => res.json(await fetchRanking(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query)))));
+app.get('/api/sales', authMiddleware, requireRoles('developer', 'supervisor'), asyncHandler(async (req, res) => res.json(await fetchSales(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query)))));
+app.get('/api/shifts', authMiddleware, requireRoles('developer', 'supervisor'), asyncHandler(async (req, res) => res.json(await fetchShifts(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query)))));
+app.get('/api/ranking', authMiddleware, requireRoles('developer', 'supervisor'), asyncHandler(async (req, res) => res.json(await fetchRanking(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query)))));
 app.get('/api/my-metrics', authMiddleware, requireRoles('employee'), asyncHandler(async (req, res) => res.json(await fetchMyMetrics(req.user, dateRange(req.query)))));
 
 const PUBLIC_ROOT = path.resolve(__dirname, 'dist');
