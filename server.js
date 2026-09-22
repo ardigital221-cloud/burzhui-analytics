@@ -168,12 +168,12 @@ async function verifyPassword(password, encoded) {
   } catch (_) { return false; }
 }
 
-const USER_COLUMNS = `id, username, full_name, "role" AS role, department_id, department_name, department_ids, all_departments, iiko_employee_name, iiko_employee_code, active, password_hash, created_at, updated_at`;
-const USER_COLUMNS_QUALIFIED = `u.id, u.username, u.full_name, u."role" AS role, u.department_id, u.department_name, u.department_ids, u.all_departments, u.iiko_employee_name, u.iiko_employee_code, u.active, u.password_hash, u.created_at, u.updated_at`;
+const USER_COLUMNS = `id, username, full_name, "role" AS role, department_id, department_name, department_ids, all_departments, iiko_employee_name, iiko_employee_code, telegram_username, telegram_chat_id, active, password_hash, created_at, updated_at`;
+const USER_COLUMNS_QUALIFIED = `u.id, u.username, u.full_name, u."role" AS role, u.department_id, u.department_name, u.department_ids, u.all_departments, u.iiko_employee_name, u.iiko_employee_code, u.telegram_username, u.telegram_chat_id, u.active, u.password_hash, u.created_at, u.updated_at`;
 function userView(row) {
   if (!row) return row;
   const scope = userScope(row);
-  return { id: row.id, username: row.username, full_name: row.full_name, role: row.role, department_id: row.department_id, department_name: row.department_name, department_ids: scope.ids, all_departments: scope.all, iiko_employee_name: row.iiko_employee_name, iiko_employee_code: row.iiko_employee_code, active: row.active, created_at: row.created_at, updated_at: row.updated_at };
+  return { id: row.id, username: row.username, full_name: row.full_name, role: row.role, department_id: row.department_id, department_name: row.department_name, department_ids: scope.ids, all_departments: scope.all, iiko_employee_name: row.iiko_employee_name, iiko_employee_code: row.iiko_employee_code, telegram_username: row.telegram_username, telegram_linked: Boolean(row.telegram_chat_id), active: row.active, created_at: row.created_at, updated_at: row.updated_at };
 }
 async function getUserById(id) { return (await pool.query(`SELECT ${USER_COLUMNS} FROM users WHERE id = $1`, [id])).rows[0] || null; }
 async function createSession(userId) {
@@ -234,12 +234,19 @@ UPDATE tasks SET priority = 'normal' WHERE priority IS NULL;
 ALTER TABLE tasks ALTER COLUMN priority SET NOT NULL;
 DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tasks_priority_check') THEN ALTER TABLE tasks ADD CONSTRAINT tasks_priority_check CHECK (priority IN ('low','normal','high','urgent')); END IF; END $$;
 CREATE INDEX IF NOT EXISTS tasks_department_idx ON tasks(department_id); CREATE INDEX IF NOT EXISTS tasks_assignee_idx ON tasks(assignee_id);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_username VARCHAR(64);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_chat_id BIGINT;
 CREATE TABLE IF NOT EXISTS task_comments (id BIGSERIAL PRIMARY KEY, task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, user_id UUID NOT NULL REFERENCES users(id), body TEXT NOT NULL, kind VARCHAR(20) NOT NULL DEFAULT 'comment' CHECK (kind IN ('comment','report')), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
 CREATE INDEX IF NOT EXISTS task_comments_task_idx ON task_comments(task_id, created_at);
 CREATE TABLE IF NOT EXISTS task_attachments (id UUID PRIMARY KEY, task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, user_id UUID NOT NULL REFERENCES users(id), filename VARCHAR(255) NOT NULL, mime_type VARCHAR(100) NOT NULL, size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 5242880), data BYTEA NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
 CREATE INDEX IF NOT EXISTS task_attachments_task_idx ON task_attachments(task_id, created_at);
 CREATE TABLE IF NOT EXISTS task_events (id BIGSERIAL PRIMARY KEY, task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, user_id UUID REFERENCES users(id), event_type VARCHAR(80) NOT NULL, payload JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
 CREATE INDEX IF NOT EXISTS task_events_task_idx ON task_events(task_id, created_at);
+CREATE TABLE IF NOT EXISTS app_settings (key VARCHAR(80) PRIMARY KEY, value TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS telegram_links (code CHAR(8) PRIMARY KEY, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS telegram_updates (update_id BIGINT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS task_overdue_marks (task_id BIGINT PRIMARY KEY, marked_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS departments (id VARCHAR(128) PRIMARY KEY, name VARCHAR(200) NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
 `;
 async function initializeDatabase() {
   const client = await pool.connect();
@@ -288,8 +295,8 @@ function validateTaskDepartment(user, departmentId) {
 }
 function validateTaskAssignee(assignee, departmentId) {
   if (!assignee || !assignee.active) fail(400, 'Исполнитель не найден или деактивирован', 'INVALID_ASSIGNEE');
-  if (assignee.role !== 'employee') fail(400, 'Задачу можно назначить только сотруднику', 'INVALID_ASSIGNEE');
-  if (!scopeAllows(userScope(assignee), departmentId)) fail(400, 'Исполнитель не привязан к выбранной точке', 'INVALID_ASSIGNEE');
+  if (assignee.role === 'developer') fail(400, 'Задачу нельзя назначить разработчику', 'INVALID_ASSIGNEE');
+  if (!scopeAllows(userScope(assignee), departmentId) && assignee.role !== 'supervisor') fail(400, 'Исполнитель не привязан к выбранной точке', 'INVALID_ASSIGNEE');
 }
 
 function validImage(file) {
@@ -342,7 +349,37 @@ async function fetchDepartments() {
     const item = match[1]; const type = (item.match(/<type>(.*?)<\/type>/) || [])[1]; const id = (item.match(/<id>(.*?)<\/id>/) || [])[1]; const name = (item.match(/<name>(.*?)<\/name>/) || [])[1]; const code = (item.match(/<code>(.*?)<\/code>/) || [])[1];
     if (type === 'DEPARTMENT' && id && name) items.push({ id, name, code: code || '' });
   }
-  return items.sort((a, b) => a.name.localeCompare(b.name, 'ru', { numeric: true, sensitivity: 'base' }));
+  const sorted = items.sort((a, b) => a.name.localeCompare(b.name, 'ru', { numeric: true, sensitivity: 'base' }));
+  await syncDepartments(sorted);
+  return sorted;
+}
+// Mirror of iiko points kept in our own database, so the app stays usable while iiko is unreachable.
+async function syncDepartments(items) {
+  if (!Array.isArray(items) || !items.length) return;
+  try {
+    const values = []; const params = [];
+    items.forEach((item) => { if (!item.id || !item.name) return; params.push(item.id, item.name); values.push(`($${params.length - 1}, $${params.length})`); });
+    if (!values.length) return;
+    await pool.query(`INSERT INTO departments (id, name, updated_at) VALUES ${values.join(', ')} ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()`, params);
+  } catch (error) { console.error('[BURЖУЙ] departments sync failed', error.message); }
+}
+async function knownDepartments() {
+  const rows = (await pool.query('SELECT id, name FROM departments ORDER BY name')).rows;
+  return rows.map((row) => ({ id: row.id, name: row.name, code: '' }));
+}
+// Remember a point the moment our own data mentions it, so the list survives an iiko outage.
+async function rememberDepartment(id, name) {
+  if (!id || !name) return;
+  try { await pool.query('INSERT INTO departments (id, name, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()', [id, name]); }
+  catch (error) { console.error('[BURЖУЙ] department remember failed', error.message); }
+}
+function iikoUnavailable(error) {
+  const code = (error && (error.code || error.name)) || '';
+  const message = String((error && error.message) || '');
+  if (['ENOTFOUND', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ECONNRESET', 'EHOSTUNREACH', 'ERR_SOCKET_CONNECTION_TIMEOUT'].includes(code) || /iiko (authentication failed|request timeout|employees|departments|report|shifts)/.test(message)) {
+    return new AppError(503, 'Сервис iiko временно недоступен. Аналитика обновится, когда связь восстановится.', 'IIKO_UNAVAILABLE');
+  }
+  return error;
 }
 function salesFilters(dates, departmentId, cashier, cashierCode) {
   const filters = { 'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: dates.from, to: dates.toInclusive }, OrderDeleted: { filterType: 'IncludeValues', values: ['NOT_DELETED'] } };
@@ -438,14 +475,17 @@ app.get('/api/users', authMiddleware, requireRoles('developer', 'supervisor', 'm
 app.post('/api/users', authMiddleware, requireRoles('developer', 'manager'), asyncHandler(async (req, res) => {
   const body = req.body || {}; const role = normalizeRole(body.role); const username = normalizeUsername(body.username); const name = boundedString(body.full_name, 'full_name', 200, true);
   const departmentName = boundedString(body.department_name, 'department_name', 200); const iikoName = boundedString(body.iiko_employee_name, 'iiko_employee_name', 200); const iikoCode = boundedString(body.iiko_employee_code, 'iiko_employee_code', 100);
+  const telegramUsername = String(body.telegram_username || '').trim().replace(/^@/, '').toLowerCase() || null;
+  if (telegramUsername && !/^[a-z0-9_]{4,32}$/.test(telegramUsername)) fail(400, 'Telegram-ник должен содержать 4–32 символа: латиница, цифры и «_»', 'INVALID_TELEGRAM');
   const active = body.active === undefined ? true : body.active; if (typeof active !== 'boolean') fail(400, 'Поле active должно быть boolean', 'VALIDATION_ERROR');
   validatePassword(body.password);
   if (req.user.role === 'manager' && role !== 'employee') fail(403, 'Менеджер может создавать только сотрудников', 'FORBIDDEN');
   const scope = scopeForRequest(body, null, role, req.user.role === 'manager' ? req.user : null);
   await ensureIikoCodeAvailable(iikoCode, scope);
   const departmentId = scope.all ? null : scope.ids[0];
+  await syncDepartments([{ id: departmentId, name: departmentName }]);
   try {
-    const result = await pool.query(`INSERT INTO users (id, username, full_name, "role", department_id, department_name, department_ids, all_departments, iiko_employee_name, iiko_employee_code, active, password_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING ${USER_COLUMNS}`, [crypto.randomUUID(), username, name, role, departmentId, departmentName, scope.ids, scope.all, iikoName, iikoCode, active, await hashPassword(body.password)]);
+    const result = await pool.query(`INSERT INTO users (id, username, full_name, "role", department_id, department_name, department_ids, all_departments, iiko_employee_name, iiko_employee_code, telegram_username, active, password_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING ${USER_COLUMNS}`, [crypto.randomUUID(), username, name, role, departmentId, departmentName, scope.ids, scope.all, iikoName, iikoCode, telegramUsername, active, await hashPassword(body.password)]);
     return res.status(201).json({ success: true, user: userView(result.rows[0]) });
   } catch (error) {
     if (error.code === '23505') fail(409, 'Пользователь с таким логином уже существует', 'USERNAME_EXISTS');
@@ -474,9 +514,15 @@ app.patch('/api/users/:id', authMiddleware, asyncHandler(async (req, res) => {
   if (body.department_name !== undefined) add('department_name', boundedString(body.department_name, 'department_name', 200));
   if (body.iiko_employee_name !== undefined) add('iiko_employee_name', boundedString(body.iiko_employee_name, 'iiko_employee_name', 200));
   if (body.iiko_employee_code !== undefined) add('iiko_employee_code', boundedString(body.iiko_employee_code, 'iiko_employee_code', 100));
+  if (body.telegram_username !== undefined) {
+    const telegramUsername = String(body.telegram_username || '').trim().replace(/^@/, '').toLowerCase() || null;
+    if (telegramUsername && !/^[a-z0-9_]{4,32}$/.test(telegramUsername)) fail(400, 'Telegram-ник должен содержать 4–32 символа: латиница, цифры и «_»', 'INVALID_TELEGRAM');
+    add('telegram_username', telegramUsername);
+  }
   if (body.active !== undefined) { if (typeof body.active !== 'boolean') fail(400, 'Поле active должно быть boolean', 'VALIDATION_ERROR'); if (self && !body.active) fail(400, 'Нельзя деактивировать текущего пользователя', 'VALIDATION_ERROR'); add('active', body.active); }
   if (body.role !== undefined) add('"role"', nextRole);
   if (req.user.role !== 'employee' && (hasScopeFields || body.role !== undefined)) { add('department_ids', scope.ids); add('all_departments', scope.all); add('department_id', scope.all ? null : scope.ids[0]); }
+  if (!scope.all && scope.ids.length) await syncDepartments([{ id: scope.ids[0], name: body.department_name || target.department_name }]);
   if (body.password !== undefined) { if (req.user.role === 'employee' && !(await verifyPassword(body.current_password, req.user.password_hash))) fail(401, 'Текущий пароль неверен', 'INVALID_CREDENTIALS'); validatePassword(body.password); add('password_hash', await hashPassword(body.password)); }
   if (body.iiko_employee_code !== undefined || hasScopeFields || body.role !== undefined) await ensureIikoCodeAvailable(body.iiko_employee_code === undefined ? target.iiko_employee_code : boundedString(body.iiko_employee_code, 'iiko_employee_code', 100), scope, target.id);
   if (!fields.length) fail(400, 'Нет изменений', 'VALIDATION_ERROR'); fields.push('updated_at = NOW()'); values.push(target.id);
@@ -504,7 +550,8 @@ app.post('/api/tasks', authMiddleware, requireRoles('developer', 'supervisor', '
   validateTaskDepartment(req.user, departmentId);
   if (assigneeId) validateTaskAssignee(assignee, departmentId);
   const client = await pool.connect();
-  try { await client.query('BEGIN'); const result = await client.query('INSERT INTO tasks (title,description,status,priority,department_id,department_name,creator_id,assignee_id,due_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id', [title, description, status, priority, departmentId, departmentName, req.user.id, assigneeId, dueAt]); await client.query('INSERT INTO task_events (task_id,user_id,event_type,payload) VALUES ($1,$2,$3,$4::jsonb)', [result.rows[0].id, req.user.id, 'task_created', JSON.stringify({ status, priority, due_at: dueAt })]); await client.query('COMMIT'); const task = await getTask(result.rows[0].id); return res.status(201).json({ success: true, task: await taskDetail(task, req.user) }); } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  await syncDepartments([{ id: departmentId, name: departmentName }]);
+  try { await client.query('BEGIN'); const result = await client.query('INSERT INTO tasks (title,description,status,priority,department_id,department_name,creator_id,assignee_id,due_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id', [title, description, status, priority, departmentId, departmentName, req.user.id, assigneeId, dueAt]); await client.query('INSERT INTO task_events (task_id,user_id,event_type,payload) VALUES ($1,$2,$3,$4::jsonb)', [result.rows[0].id, req.user.id, 'task_created', JSON.stringify({ status, priority, due_at: dueAt })]); await client.query('COMMIT'); const task = await getTask(result.rows[0].id); if (assigneeId) notifyAssignee(task, '🆕 Новая задача').catch(() => {}); return res.status(201).json({ success: true, task: await taskDetail(task, req.user) }); } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }));
 app.patch('/api/tasks/:id', authMiddleware, asyncHandler(async (req, res) => {
   const taskId = idValue(req.params.id); const task = await getTask(taskId); if (!task) fail(404, 'Задача не найдена', 'NOT_FOUND'); if (!canAccessTask(task, req.user)) fail(403, 'Нет доступа к задаче', 'FORBIDDEN');
@@ -525,7 +572,19 @@ app.patch('/api/tasks/:id', authMiddleware, asyncHandler(async (req, res) => {
   if (!['employee'].includes(req.user.role) && body.department_id === undefined && !canAccessTask(task, req.user)) fail(403, 'Нет доступа к точке задачи', 'FORBIDDEN');
   if (!fields.length) fail(400, 'Нет изменений', 'VALIDATION_ERROR'); fields.push('updated_at = NOW()'); values.push(taskId);
   await pool.query(`UPDATE tasks SET ${fields.join(', ')} WHERE id = $${values.length}`, values); await taskEvent(taskId, req.user.id, 'task_updated', { fields: keys });
-  const updated = await getTask(taskId); return res.json({ success: true, task: await taskDetail(updated, req.user) });
+  const updated = await getTask(taskId);
+  if (body.status !== undefined && body.status !== task.status) notifyAssignee(updated, `🔄 Статус: ${TG_STATUS_LABELS[updated.status] || updated.status}`).catch(() => {});
+  else if (body.assignee_id !== undefined && updated.assignee_id !== task.assignee_id && updated.assignee_id) notifyAssignee(updated, '📌 Вам назначена задача').catch(() => {});
+  else if (body.due_at !== undefined) notifyAssignee(updated, '🗓 Дедлайн задачи обновлён').catch(() => {});
+  return res.json({ success: true, task: await taskDetail(updated, req.user) });
+}));
+app.delete('/api/tasks/:id', authMiddleware, requireRoles('developer', 'supervisor', 'manager'), asyncHandler(async (req, res) => {
+  const taskId = idValue(req.params.id); const task = await getTask(taskId);
+  if (!task) fail(404, 'Задача не найдена', 'NOT_FOUND');
+  if (!canAccessTask(task, req.user)) fail(403, 'Нет доступа к задаче', 'FORBIDDEN');
+  await pool.query('DELETE FROM tasks WHERE id = $1', [taskId]);
+  if (task.assignee_id) { const chatId = (await pool.query('SELECT telegram_chat_id FROM users WHERE id = $1', [task.assignee_id])).rows[0]?.telegram_chat_id; if (chatId) tgSend(chatId, `<b>🗑 Задача удалена</b>\n📋 ${task.title}`).catch(() => {}); }
+  return res.json({ success: true });
 }));
 app.post('/api/tasks/:id/comments', authMiddleware, asyncHandler(async (req, res) => {
   const task = await getTask(idValue(req.params.id)); if (!task || !canAccessTask(task, req.user)) fail(404, 'Задача не найдена', 'NOT_FOUND');
@@ -549,11 +608,150 @@ app.get('/api/task-stats', authMiddleware, asyncHandler(async (req, res) => {
   const stats = { total: 0, new: 0, in_progress: 0, review: 0, done: 0 }; (await pool.query(query, params)).rows.forEach((row) => { stats[row.status] = row.count; stats.total += row.count; }); return res.json({ success: true, stats });
 }));
 
-app.get('/api/departments', authMiddleware, requireRoles('developer', 'supervisor', 'manager'), asyncHandler(async (req, res) => { const departments = await fetchDepartments(); const scope = userScope(req.user); return res.json({ success: true, departments: scope.all ? departments : departments.filter((item) => scope.ids.includes(item.id)) }); }));
-app.get('/api/sales', authMiddleware, requireRoles('developer', 'supervisor'), asyncHandler(async (req, res) => res.json(await fetchSales(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query)))));
-app.get('/api/shifts', authMiddleware, requireRoles('developer', 'supervisor'), asyncHandler(async (req, res) => res.json(await fetchShifts(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query)))));
-app.get('/api/ranking', authMiddleware, requireRoles('developer', 'supervisor'), asyncHandler(async (req, res) => res.json(await fetchRanking(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query)))));
-app.get('/api/my-metrics', authMiddleware, requireRoles('employee'), asyncHandler(async (req, res) => res.json(await fetchMyMetrics(req.user, dateRange(req.query)))));
+app.get('/api/departments', authMiddleware, requireRoles('developer', 'supervisor', 'manager'), asyncHandler(async (req, res) => {
+  const scope = userScope(req.user);
+  let departments = []; let degraded = false;
+  try { departments = await fetchDepartments(); }
+  catch (error) {
+    console.error('[BURЖУЙ] iiko departments unavailable, using cached list', (error && error.code) || (error && error.message) || 'unknown');
+    departments = await knownDepartments(); degraded = true;
+  }
+  const scoped = scope.all ? departments : departments.filter((item) => scope.ids.includes(item.id));
+  return res.json({ success: true, departments: scoped, degraded });
+}));
+app.get('/api/sales', authMiddleware, requireRoles('developer', 'supervisor'), asyncHandler(async (req, res) => { try { return res.json(await fetchSales(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query))); } catch (error) { throw iikoUnavailable(error); } }));
+app.get('/api/shifts', authMiddleware, requireRoles('developer', 'supervisor'), asyncHandler(async (req, res) => { try { return res.json(await fetchShifts(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query))); } catch (error) { throw iikoUnavailable(error); } }));
+app.get('/api/ranking', authMiddleware, requireRoles('developer', 'supervisor'), asyncHandler(async (req, res) => { try { return res.json(await fetchRanking(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query))); } catch (error) { throw iikoUnavailable(error); } }));
+app.get('/api/my-metrics', authMiddleware, requireRoles('employee'), asyncHandler(async (req, res) => { try { return res.json(await fetchMyMetrics(req.user, dateRange(req.query))); } catch (error) { throw iikoUnavailable(error); } }));
+
+/* ---------- Telegram bot integration ---------- */
+const TG_STATUS_LABELS = { new: 'Новая', in_progress: 'В работе', review: 'На проверке', done: 'Готово' };
+const TG_PRIORITY_LABELS = { low: 'Низкий', normal: 'Обычный', high: 'Высокий', urgent: '🔥 Срочный' };
+async function getSetting(key) { return (await pool.query('SELECT value FROM app_settings WHERE key = $1', [key])).rows[0]?.value || ''; }
+async function setSetting(key, value) { await pool.query('INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()', [key, value]); }
+function tgApi(token, method, params = {}) {
+  return new Promise((resolve) => {
+    const body = JSON.stringify(params);
+    const request = https.request({ hostname: 'api.telegram.org', port: 443, path: `/bot${token}/${method}`, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, (response) => {
+      let data = ''; response.on('data', (part) => { data += part; });
+      response.on('end', () => { try { resolve(JSON.parse(data)); } catch (_) { resolve({ ok: false }); } });
+    });
+    request.on('error', () => resolve({ ok: false }));
+    request.setTimeout(10000, () => request.destroy());
+    if (body) request.write(body);
+    request.end();
+  });
+}
+async function tgSend(chatId, text) {
+  const token = await getSetting('telegram_bot_token');
+  if (!token || !chatId) return false;
+  const result = await tgApi(token, 'sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true });
+  return Boolean(result && result.ok);
+}
+function tgTaskText(task, event) {
+  const lines = [`<b>${event}</b>`, `📋 ${task.title}`, `Статус: ${TG_STATUS_LABELS[task.status] || task.status} · Приоритет: ${TG_PRIORITY_LABELS[task.priority] || task.priority}`];
+  if (task.department_name) lines.push(`Точка: ${task.department_name}`);
+  if (task.due_at) lines.push(`Дедлайн: ${new Date(task.due_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`);
+  if (task.assignee_name) lines.push(`Исполнитель: ${task.assignee_name}`);
+  return lines.join('\n');
+}
+async function notifyAssignee(task, event) {
+  if (!task.assignee_id) return;
+  const chatId = (await pool.query('SELECT telegram_chat_id FROM users WHERE id = $1', [task.assignee_id])).rows[0]?.telegram_chat_id;
+  if (chatId) await tgSend(chatId, tgTaskText(task, event));
+}
+async function pollTelegram() {
+  const token = await getSetting('telegram_bot_token');
+  if (!token) return;
+  const last = Number(await getSetting('telegram_update_offset') || 0);
+  const result = await tgApi(token, 'getUpdates', { offset: last + 1, timeout: 0, limit: 50 });
+  if (!result || !result.ok || !Array.isArray(result.result)) {
+    if (result && result.error_code === 401) console.error('[BURЖУЙ] Telegram токен отклонён (401). Проверьте токен в настройках.');
+    return;
+  }
+  for (const update of result.result) {
+    try {
+      await pool.query('INSERT INTO telegram_updates (update_id) VALUES ($1) ON CONFLICT DO NOTHING', [update.update_id]);
+      await setSetting('telegram_update_offset', String(update.update_id));
+      const message = update.message; if (!message || !message.chat || !message.from) continue;
+      const text = String(message.text || '').trim();
+      const chatId = message.chat.id;
+      const tgUsername = message.from.username ? String(message.from.username).toLowerCase() : null;
+      const startMatch = text.match(/^\/start(?:\s+([A-Za-z0-9]{8}))?/);
+      if (startMatch) {
+        const code = startMatch[1];
+        if (code) {
+          const link = (await pool.query('SELECT user_id FROM telegram_links WHERE code = $1 AND expires_at > NOW()', [code])).rows[0];
+          if (link) {
+            await pool.query('UPDATE users SET telegram_chat_id = $1, updated_at = NOW() WHERE id = $2', [chatId, link.user_id]);
+            await pool.query('DELETE FROM telegram_links WHERE code = $1', [code]);
+            await tgSend(chatId, '✅ Telegram привязан к вашему аккаунту BURЖУЙ. Теперь сюда будут приходить уведомления о задачах.');
+          } else {
+            await tgSend(chatId, '⛔ Ссылка устарела или неверна. Сгенерируйте новую в профиле на платформе.');
+          }
+        } else if (tgUsername) {
+          const user = (await pool.query('SELECT id, full_name FROM users WHERE lower(telegram_username) = $1 AND active = TRUE', [tgUsername])).rows[0];
+          if (user) {
+            await pool.query('UPDATE users SET telegram_chat_id = $1, updated_at = NOW() WHERE id = $2', [chatId, user.id]);
+            await tgSend(chatId, `✅ ${user.full_name}, Telegram привязан к вашему аккаунту BURЖУЙ. Уведомления о задачах будут приходить сюда.`);
+          } else {
+            await tgSend(chatId, 'Привет! Чтобы получать уведомления BURЖУЙ, укажите ваш Telegram-ник в профиле на платформе или привяжите аккаунт по персональной ссылке.');
+          }
+        }
+      } else if (text === '/stop') {
+        await pool.query('UPDATE users SET telegram_chat_id = NULL WHERE telegram_chat_id = $1', [chatId]);
+        await tgSend(chatId, 'Уведомления отключены. Напишите /start, чтобы включить снова.');
+      }
+    } catch (error) { console.error('[BURЖУЙ] telegram update error', error.message); }
+  }
+}
+async function scanOverdueTasks() {
+  const rows = (await pool.query(`SELECT t.*, au.full_name AS assignee_name FROM tasks t LEFT JOIN users au ON au.id = t.assignee_id WHERE t.status <> 'done' AND t.due_at IS NOT NULL AND t.due_at < NOW() AND t.assignee_id IS NOT NULL`)).rows;
+  for (const task of rows) {
+    const marked = (await pool.query('SELECT 1 FROM task_overdue_marks WHERE task_id = $1', [task.id])).rows[0];
+    if (marked) continue;
+    const notified = await notifyAssignee(task, '⏰ Задача просрочена!');
+    // also ping the creator when assignee has no telegram
+    if (!notified && task.creator_id) {
+      const creatorChat = (await pool.query('SELECT telegram_chat_id FROM users WHERE id = $1', [task.creator_id])).rows[0]?.telegram_chat_id;
+      if (creatorChat) await tgSend(creatorChat, tgTaskText(task, '⏰ Задача просрочена (исполнитель не привязал Telegram)'));
+    }
+    await pool.query('INSERT INTO task_overdue_marks (task_id) VALUES ($1) ON CONFLICT DO NOTHING', [task.id]);
+  }
+}
+
+app.get('/api/telegram/settings', authMiddleware, requireRoles('developer'), asyncHandler(async (req, res) => {
+  const token = await getSetting('telegram_bot_token');
+  let botInfo = null;
+  if (token) { const me = await tgApi(token, 'getMe'); if (me && me.ok) botInfo = { username: me.result.username, name: me.result.first_name }; }
+  return res.json({ success: true, settings: { configured: Boolean(token), token_hint: token ? '…' + token.slice(-6) : '', bot: botInfo } });
+}));
+app.put('/api/telegram/settings', authMiddleware, requireRoles('developer'), asyncHandler(async (req, res) => {
+  const token = boundedString(req.body && req.body.token, 'token', 100);
+  if (!token) { await setSetting('telegram_bot_token', ''); await setSetting('telegram_update_offset', '0'); return res.json({ success: true, settings: { configured: false } }); }
+  const me = await tgApi(token, 'getMe');
+  if (!me || !me.ok) fail(400, 'Telegram не принял токен. Проверьте его в @BotFather.', 'INVALID_TOKEN');
+  await setSetting('telegram_bot_token', token); await setSetting('telegram_update_offset', '0');
+  return res.json({ success: true, settings: { configured: true, bot: { username: me.result.username, name: me.result.first_name } } });
+}));
+app.get('/api/telegram/link', authMiddleware, asyncHandler(async (req, res) => {
+  const row = (await pool.query('SELECT telegram_chat_id, telegram_username FROM users WHERE id = $1', [req.user.id])).rows[0];
+  return res.json({ success: true, linked: Boolean(row && row.telegram_chat_id), telegram_username: (row && row.telegram_username) || null });
+}));
+app.post('/api/telegram/link', authMiddleware, asyncHandler(async (req, res) => {
+  const token = await getSetting('telegram_bot_token');
+  if (!token) fail(400, 'Сначала настройте бота в разделе настроек', 'BOT_NOT_CONFIGURED');
+  const me = await tgApi(token, 'getMe');
+  const botUsername = me && me.ok ? me.result.username : 'bot';
+  const code = crypto.randomBytes(4).toString('hex');
+  await pool.query('DELETE FROM telegram_links WHERE user_id = $1 OR expires_at <= NOW()', [req.user.id]);
+  await pool.query('INSERT INTO telegram_links (code, user_id, expires_at) VALUES ($1, $2, NOW() + interval \'15 minutes\')', [code, req.user.id]);
+  return res.json({ success: true, link: `https://t.me/${botUsername}?start=${code}`, expires_in_minutes: 15 });
+}));
+app.delete('/api/telegram/link', authMiddleware, asyncHandler(async (req, res) => {
+  await pool.query('UPDATE users SET telegram_chat_id = NULL WHERE id = $1', [req.user.id]);
+  return res.json({ success: true });
+}));
 
 const PUBLIC_ROOT = path.resolve(__dirname, 'dist');
 const MIME_TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf' };
@@ -568,8 +766,17 @@ app.get('*', (req, res, next) => {
 app.use((req, res) => sendError(res, 404, 'Ресурс не найден', 'NOT_FOUND'));
 app.use((error, req, res, next) => { if (res.headersSent) return next(error); const status = error instanceof AppError ? error.status : error.code === 'LIMIT_FILE_SIZE' ? 413 : 500; const message = error instanceof AppError ? error.message : status === 413 ? 'Файл слишком большой' : 'Внутренняя ошибка сервера'; console.error('[BURЖУЙ] request error', req.method, req.path, error.code || error.name || 'Error', error.message || 'unknown'); return sendError(res, status, message, error instanceof AppError ? error.code : 'INTERNAL_ERROR'); });
 
-let server; let cleanupTimer;
-async function start() { await initializeDatabase(); cleanupTimer = setInterval(() => pool.query('DELETE FROM sessions WHERE expires_at <= NOW()').catch(() => {}), 60 * 60 * 1000); server = app.listen(PORT, () => console.log(`[BURЖУЙ] Сервер запущен на порту ${PORT}`)); }
-async function shutdown(signal) { console.log(`[BURЖУЙ] Завершение работы (${signal})`); if (cleanupTimer) clearInterval(cleanupTimer); if (server) await new Promise((resolve) => server.close(resolve)); await pool.end(); process.exit(0); }
+let server; let cleanupTimer; let linkCleanupTimer; let telegramTimer; let overdueTimer;
+async function start() {
+  await initializeDatabase();
+  cleanupTimer = setInterval(() => pool.query('DELETE FROM sessions WHERE expires_at <= NOW()').catch(() => {}), 60 * 60 * 1000);
+  linkCleanupTimer = setInterval(() => pool.query("DELETE FROM telegram_links WHERE expires_at <= NOW()").catch(() => {}), 60 * 60 * 1000);
+  telegramTimer = setInterval(() => { pollTelegram().catch((error) => console.error('[BURЖУЙ] telegram poll failed', error.message)); }, 5000);
+  overdueTimer = setInterval(() => { scanOverdueTasks().catch((error) => console.error('[BURЖУЙ] overdue scan failed', error.message)); }, 10 * 60 * 1000);
+  pollTelegram().catch(() => {});
+  scanOverdueTasks().catch(() => {});
+  server = app.listen(PORT, () => console.log(`[BURЖУЙ] Сервер запущен на порту ${PORT}`));
+}
+async function shutdown(signal) { console.log(`[BURЖУЙ] Завершение работы (${signal})`); [cleanupTimer, linkCleanupTimer, telegramTimer, overdueTimer].forEach((timer) => timer && clearInterval(timer)); if (server) await new Promise((resolve) => server.close(resolve)); await pool.end(); process.exit(0); }
 process.once('SIGTERM', () => shutdown('SIGTERM')); process.once('SIGINT', () => shutdown('SIGINT'));
 start().catch((error) => { console.error('[BURЖУЙ] Не удалось запустить сервер:', error.code || error.name || 'startup_error', error.message || 'unknown'); pool.end().finally(() => process.exit(1)); });

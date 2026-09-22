@@ -43,10 +43,12 @@ import {
   RefreshCw,
   Search,
   Send,
+  Settings,
   ShieldCheck,
   Sparkles,
   Store,
   Target,
+  Trash2,
   TrendingUp,
   Upload,
   UserRound,
@@ -107,7 +109,7 @@ import { cn } from "@/lib/utils";
 type Role = "developer" | "supervisor" | "manager" | "employee";
 type TaskStatus = "new" | "in_progress" | "review" | "done";
 type TaskPriority = "low" | "normal" | "high" | "urgent";
-type View = "overview" | "tasks" | "team" | "analytics" | "profile";
+type View = "overview" | "tasks" | "team" | "analytics" | "settings" | "profile";
 
 type User = {
   id: string;
@@ -120,6 +122,9 @@ type User = {
   all_departments?: boolean;
   iiko_employee_name: string | null;
   iiko_employee_code: string | null;
+  telegram_username: string | null;
+  telegram_linked: boolean;
+  open_tasks?: number;
   active: boolean;
 };
 
@@ -251,6 +256,12 @@ const navItems: {
     roles: ["developer", "supervisor"],
   },
   {
+    id: "settings",
+    label: "Настройки",
+    icon: Settings,
+    roles: ["developer"],
+  },
+  {
     id: "profile",
     label: "Профиль",
     icon: UserRound,
@@ -264,6 +275,7 @@ const statusLabels: Record<TaskStatus, string> = {
   review: "На проверке",
   done: "Готово",
 };
+const STATUS_COLUMNS: TaskStatus[] = ["new", "in_progress", "review", "done"];
 const priorityLabels: Record<TaskPriority, string> = {
   low: "Низкий",
   normal: "Обычный",
@@ -363,6 +375,10 @@ function textValue(...values: unknown[]) {
 
 function isNetworkRole(role: Role) {
   return role === "developer" || role === "supervisor";
+}
+
+function canDeleteTask(role: Role) {
+  return role === "developer" || role === "supervisor" || role === "manager";
 }
 
 function userDepartmentIds(user: Pick<User, "department_id" | "department_ids">) {
@@ -709,6 +725,9 @@ function App() {
           {view === "analytics" && isNetworkRole(user.role) && (
             <AnalyticsView user={user} refreshKey={refreshKey} />
           )}
+          {view === "settings" && user.role === "developer" && (
+            <SettingsView onNotice={setNotice} />
+          )}
           {view === "profile" && (
             <ProfileView user={user} onPasswordChanged={setNotice} />
           )}
@@ -974,8 +993,8 @@ function SidebarNav({
             <Icon className="size-[18px]" />
             <span>{label}</span>
             {id === "tasks" && (
-              <span className="ml-auto rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white/50">
-                LIVE
+              <span className="ml-auto rounded-full bg-white/10 px-2 py-0.5 text-[10px] tabular-nums text-white/70">
+                задачи
               </span>
             )}
           </button>
@@ -993,7 +1012,7 @@ function MobileBottomNav({
   onNavigate: (view: View) => void;
 }) {
   const mobileViews: Record<Role, View[]> = {
-    developer: ["overview", "tasks", "analytics", "profile"],
+    developer: ["overview", "tasks", "analytics", "settings"],
     supervisor: ["overview", "tasks", "analytics", "profile"],
     manager: ["overview", "tasks", "team", "profile"],
     employee: ["overview", "tasks", "profile"],
@@ -1159,18 +1178,22 @@ function OverviewView({
         : api<Record<string, unknown>>(
             `/api/sales?departmentId=${encodeURIComponent(departmentParamForUser(user))}&from=${daysAgo(6)}&to=${today()}`,
           ).then(normalizeSales);
-    Promise.all([
+    Promise.allSettled([
       api<{ tasks: Task[] }>("/api/tasks"),
       statsRequest,
       metricsRequest,
     ])
       .then(([taskResult, statsResult, salesResult]) => {
         if (!active) return;
-        setTasks(taskResult.tasks || []);
-        setStats(statsResult.stats || {});
-        setSales(salesResult);
+        if (taskResult.status === "fulfilled")
+          setTasks(taskResult.value.tasks || []);
+        else setError(errorText(taskResult.reason));
+        if (statsResult.status === "fulfilled")
+          setStats(statsResult.value.stats || {});
+        if (salesResult.status === "fulfilled") setSales(salesResult.value);
+        else if (salesResult.status === "rejected" && user.role !== "manager")
+          setError((current) => current || errorText(salesResult.reason));
       })
-      .catch((e) => active && setError(errorText(e)))
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
@@ -1639,6 +1662,53 @@ function EmptyState({
   );
 }
 
+function ConfirmDialog({
+  open,
+  onOpenChange,
+  title,
+  description,
+  confirmLabel = "Удалить",
+  busy,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+  description: string;
+  confirmLabel?: string;
+  busy?: boolean;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md rounded-2xl">
+        <DialogHeader className="text-left">
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Отмена
+          </Button>
+          <Button
+            variant="destructive"
+            className="gap-2"
+            disabled={busy}
+            onClick={onConfirm}
+          >
+            {busy ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Trash2 className="size-4" />
+            )}{" "}
+            {confirmLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function TasksView({
   user,
   refreshKey,
@@ -1660,23 +1730,32 @@ function TasksView({
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const load = () => {
     setLoading(true);
-    Promise.all([
+    setError("");
+    // Departments come from iiko and may be unavailable: that must never hide tasks.
+    Promise.allSettled([
       api<{ tasks: Task[] }>("/api/tasks"),
       user.role !== "employee"
         ? api<{ users: User[] }>("/api/users")
-        : Promise.resolve({ users: [] }),
+        : Promise.resolve({ users: [] as User[] }),
       user.role !== "employee"
         ? api<{ departments: Department[] }>("/api/departments")
-        : Promise.resolve({ departments: [] }),
+        : Promise.resolve({ departments: [] as Department[] }),
     ])
       .then(([tasksResult, usersResult, departmentsResult]) => {
-        setTasks(tasksResult.tasks || []);
-        setUsers(usersResult.users || []);
+        if (tasksResult.status === "rejected")
+          setError(errorText(tasksResult.reason));
+        else setTasks(tasksResult.value.tasks || []);
+        if (usersResult.status === "fulfilled")
+          setUsers(usersResult.value.users || []);
         setDepartments(
-          departmentsForUser(user, departmentsResult.departments || []),
+          departmentsForUser(
+            user,
+            departmentsResult.status === "fulfilled"
+              ? departmentsResult.value.departments || []
+              : [],
+          ),
         );
       })
-      .catch((e) => setError(errorText(e)))
       .finally(() => setLoading(false));
   };
   useEffect(load, [refreshKey]);
@@ -1774,33 +1853,77 @@ function TasksView({
         </CardContent>
       </Card>
       {loading ? (
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {[1, 2, 3, 4, 5, 6].map((item) => (
-            <Skeleton className="h-52 rounded-2xl" key={item} />
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {[1, 2, 3, 4].map((item) => (
+            <Skeleton className="h-64 rounded-2xl" key={item} />
           ))}
         </div>
       ) : filtered.length ? (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {filtered.map((task) => (
-            <TaskCard
-              key={task.id}
-              task={task}
-              onOpen={() => open(task)}
-              onStatusChange={async (next) => {
-                try {
-                  await api(`/api/tasks/${task.id}`, {
-                    method: "PATCH",
-                    body: JSON.stringify({ status: next }),
-                  });
-                  onNotice("Статус задачи обновлён");
-                  load();
-                } catch (e) {
-                  setError(errorText(e));
-                }
-              }}
-              canEdit={user.role !== "employee"}
-            />
-          ))}
+        <div className="grid gap-3 overflow-x-auto pb-2 md:grid-cols-2 xl:grid-cols-4">
+          {STATUS_COLUMNS.map((column) => {
+            const items = filtered.filter((task) => task.status === column);
+            return (
+              <section
+                key={column}
+                className="flex min-h-[220px] min-w-[240px] flex-col rounded-2xl border bg-white/70 p-3"
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                }}
+                onDrop={async (event) => {
+                  event.preventDefault();
+                  const id = event.dataTransfer.getData("text/plain");
+                  const task = tasks.find((item) => String(item.id) === id);
+                  if (!task || task.status === column) return;
+                  try {
+                    await api(`/api/tasks/${task.id}`, {
+                      method: "PATCH",
+                      body: JSON.stringify({ status: column }),
+                    });
+                    onNotice(`Статус: ${statusLabels[column]}`);
+                    load();
+                  } catch (e) {
+                    setError(errorText(e));
+                  }
+                }}
+              >
+                <header className="mb-3 flex items-center justify-between gap-2 px-1">
+                  <div className="text-sm font-bold">{statusLabels[column]}</div>
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-semibold tabular-nums">
+                    {items.length}
+                  </span>
+                </header>
+                <div className="grid flex-1 content-start gap-2">
+                  {items.length ? (
+                    items.map((task) => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        onOpen={() => open(task)}
+                        onStatusChange={async (next) => {
+                          try {
+                            await api(`/api/tasks/${task.id}`, {
+                              method: "PATCH",
+                              body: JSON.stringify({ status: next }),
+                            });
+                            onNotice("Статус задачи обновлён");
+                            load();
+                          } catch (e) {
+                            setError(errorText(e));
+                          }
+                        }}
+                        canEdit={user.role !== "employee"}
+                      />
+                    ))
+                  ) : (
+                    <div className="rounded-xl border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
+                      Перетащите сюда
+                    </div>
+                  )}
+                </div>
+              </section>
+            );
+          })}
         </div>
       ) : (
         <Card className="surface">
@@ -1830,6 +1953,11 @@ function TasksView({
         onSaved={() => {
           setDialogOpen(false);
           onNotice("Задача сохранена");
+          load();
+        }}
+        onDeleted={() => {
+          setDialogOpen(false);
+          onNotice("Задача удалена");
           load();
         }}
       />{" "}
@@ -1862,26 +1990,46 @@ function TaskCard({
     await onStatusChange(next);
     setBusy(false);
   };
+  const overdue = Boolean(
+    task.due_at &&
+      task.status !== "done" &&
+      !Number.isNaN(new Date(task.due_at).getTime()) &&
+      new Date(task.due_at).getTime() < Date.now(),
+  );
   return (
-    <Card className="surface group transition hover:-translate-y-0.5 hover:shadow-lg">
+    <Card
+      className="surface group cursor-grab transition hover:-translate-y-0.5 hover:shadow-lg active:cursor-grabbing"
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.setData("text/plain", String(task.id));
+        event.dataTransfer.effectAllowed = "move";
+      }}
+      onClick={onOpen}
+    >
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between gap-3">
-          <Badge
-            variant={
-              task.priority === "urgent"
-                ? "destructive"
-                : task.priority === "high"
-                  ? "default"
-                  : "outline"
-            }
-          >
-            {priorityLabels[task.priority]}
-          </Badge>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge
+              variant={
+                task.priority === "urgent"
+                  ? "destructive"
+                  : task.priority === "high"
+                    ? "default"
+                    : "outline"
+              }
+            >
+              {priorityLabels[task.priority]}
+            </Badge>
+            {overdue && <Badge variant="destructive">просрочено</Badge>}
+          </div>
           <Button
             variant="ghost"
             size="icon-sm"
             aria-label="Открыть задачу"
-            onClick={onOpen}
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpen();
+            }}
           >
             <MoreHorizontal className="size-4" />
           </Button>
@@ -1906,17 +2054,20 @@ function TaskCard({
           <span className="shrink-0">{formatDate(task.due_at)}</span>
         </div>
       </CardContent>
-      <CardFooter className="justify-between gap-2 border-t pt-4">
-        <Badge variant={task.status === "done" ? "secondary" : "outline"}>
-          {statusLabels[task.status]}
-        </Badge>
+      <CardFooter className="justify-between gap-2 border-t pt-3">
+        <span className="text-[11px] text-muted-foreground">
+          {overdue ? "Срок вышел" : formatDate(task.due_at, true)}
+        </span>
         {canAdvance && (
           <Button
             size="sm"
             variant="ghost"
             className="gap-1 text-primary"
             disabled={busy}
-            onClick={advance}
+            onClick={(event) => {
+              event.stopPropagation();
+              void advance();
+            }}
           >
             {busy ? (
               <Loader2 className="size-3 animate-spin" />
@@ -1939,6 +2090,7 @@ function TaskDialog({
   users,
   departments,
   onSaved,
+  onDeleted,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -1947,14 +2099,31 @@ function TaskDialog({
   users: User[];
   departments: Department[];
   onSaved: () => void;
+  onDeleted: () => void;
 }) {
   const [mode, setMode] = useState<"detail" | "edit">(task ? "detail" : "edit");
   const [detail, setDetail] = useState<Task | null>(task);
   const [busy, setBusy] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [comment, setComment] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState("");
   const [error, setError] = useState("");
+  const remove = async () => {
+    if (!task) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/tasks/${task.id}`, { method: "DELETE" });
+      setConfirmOpen(false);
+      onDeleted();
+    } catch (e) {
+      setError(errorText(e));
+      setConfirmOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  };
   useEffect(() => {
     setMode(task ? "detail" : "edit");
     setDetail(task);
@@ -2118,8 +2287,7 @@ function TaskDialog({
                   >
                     <Pencil className="size-4" /> Изменить
                   </Button>
-                )}
-                {detail.status !== "done" &&
+                )}                {detail.status !== "done" &&
                   (user.role !== "employee" || detail.status !== "review") && (
                     <Button
                       className="gap-2"
@@ -2160,6 +2328,16 @@ function TaskDialog({
                           : "Начать работу"}
                     </Button>
                   )}
+                {canDeleteTask(user.role) && (
+                  <Button
+                    variant="ghost"
+                    className="ml-auto gap-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    disabled={busy}
+                    onClick={() => setConfirmOpen(true)}
+                  >
+                    <Trash2 className="size-4" /> Удалить
+                  </Button>
+                )}
               </div>
               <section>
                 <div className="mb-3 flex items-center gap-2 text-sm font-bold">
@@ -2286,6 +2464,14 @@ function TaskDialog({
           )}
         </DialogFooter>
       </DialogContent>
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        busy={busy}
+        title="Удалить задачу?"
+        description={`Задача «${task?.title || ""}» и вся её история — комментарии и фото — будут удалены безвозвратно. Исполнителю придёт уведомление в Telegram.`}
+        onConfirm={remove}
+      />
     </Dialog>
   );
 }
@@ -2313,14 +2499,14 @@ function TaskForm({
         ? departmentsForUser(user, departments)[0].id
         : ""),
   );
-  const availableUsers =
-    users.filter(
-      (item) =>
-        item.role === "employee" &&
-        (user.role !== "manager" ||
-          item.all_departments ||
-          userDepartmentIds(item).some((id) => hasDepartment(user, id))),
-    );
+  const availableUsers = users.filter(
+    (item) =>
+      item.active !== false &&
+      item.role !== "developer" &&
+      (user.role !== "manager" ||
+        item.all_departments ||
+        userDepartmentIds(item).some((id) => hasDepartment(user, id))),
+  );
   const availableDepartments = departmentsForUser(user, departments);
   const departmentUsers = availableUsers.filter(
     (item) => !selectedTaskDepartmentId || hasDepartment(item, selectedTaskDepartmentId),
@@ -2483,17 +2669,24 @@ function TeamView({
   };
   const load = () => {
     setLoading(true);
-    Promise.all([
+    setError("");
+    Promise.allSettled([
       api<{ users: User[] }>("/api/users"),
       api<{ departments: Department[] }>("/api/departments"),
     ])
       .then(([usersResult, departmentsResult]) => {
-        setUsers(usersResult.users || []);
+        if (usersResult.status === "rejected")
+          setError(errorText(usersResult.reason));
+        else setUsers(usersResult.value.users || []);
         setDepartments(
-          departmentsForUser(user, departmentsResult.departments || []),
+          departmentsForUser(
+            user,
+            departmentsResult.status === "fulfilled"
+              ? departmentsResult.value.departments || []
+              : [],
+          ),
         );
       })
-      .catch((e) => setError(errorText(e)))
       .finally(() => setLoading(false));
   };
   useEffect(load, [refreshKey]);
@@ -2543,9 +2736,13 @@ function TeamView({
                       <div className="text-xs text-muted-foreground">@{member.username}</div>
                     </div>
                   </div>
-                  <Badge variant={member.role === "developer" ? "default" : "outline"}>
-                    {roleName(member.role)}
-                  </Badge>
+                  {member.telegram_username ? (
+                    <Badge variant={member.telegram_linked ? "secondary" : "outline"}>
+                      @{member.telegram_username}
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline">нет Telegram</Badge>
+                  )}
                 </div>
                 <div className="rounded-xl bg-muted/50 p-3 text-xs leading-5">
                   <div className="font-semibold text-muted-foreground">Доступ к точкам</div>
@@ -2572,8 +2769,8 @@ function TeamView({
               <TableHeader>
                 <TableRow>
                   <TableHead>Сотрудник</TableHead>
-                  <TableHead>Роль</TableHead>
                   <TableHead>Точка</TableHead>
+                  <TableHead>Telegram</TableHead>
                   <TableHead>iiko-код</TableHead>
                   <TableHead>Статус</TableHead>
                   <TableHead />
@@ -2599,19 +2796,22 @@ function TeamView({
                         </div>
                       </div>
                     </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={
-                          member.role === "developer" ? "default" : "outline"
-                        }
-                      >
-                        {roleName(member.role)}
-                      </Badge>
-                    </TableCell>
                     <TableCell className="whitespace-nowrap">
                       <span className="block max-w-[220px] truncate" title={scopeLabel(member)}>
                         {scopeLabel(member)}
                       </span>
+                    </TableCell>
+                    <TableCell>
+                      {member.telegram_username ? (
+                        <span className="flex items-center gap-2">
+                          @{member.telegram_username}
+                          <Badge variant={member.telegram_linked ? "secondary" : "outline"}>
+                            {member.telegram_linked ? "онлайн" : "ожидает"}
+                          </Badge>
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">не указан</span>
+                      )}
                     </TableCell>
                     <TableCell>{member.iiko_employee_code || "—"}</TableCell>
                     <TableCell>
@@ -2701,17 +2901,6 @@ function UserDialog({
   }, [open, user, currentUser]);
 
   const availableDepartments = departmentsForUser(currentUser, departments);
-  const roleOptions: { value: Role; label: string; disabled?: boolean }[] =
-    currentUser.role === "developer"
-      ? [
-          ...(user?.role === "developer"
-            ? [{ value: "developer" as Role, label: "Разработчик", disabled: true }]
-            : []),
-          { value: "supervisor", label: "Управляющий" },
-          { value: "manager", label: "Менеджер" },
-          { value: "employee", label: "Сотрудник" },
-        ]
-      : [{ value: "employee", label: "Сотрудник" }];
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -2725,11 +2914,11 @@ function UserDialog({
       allDepartments && currentUser.role === "manager" && !currentUser.all_departments
         ? availableDepartments.map((item) => item.id)
         : selectedDepartmentIds;
-    const payload = {
+    const payload: Record<string, unknown> = {
       full_name: String(form.get("full_name") || ""),
       username: String(form.get("username") || ""),
       password: String(form.get("password") || "") || undefined,
-      role,
+      telegram_username: String(form.get("telegram_username") || "").trim(),
       department_ids: effectiveAllDepartments ? [] : effectiveDepartmentIds,
       all_departments: effectiveAllDepartments,
       department_id: effectiveAllDepartments ? null : effectiveDepartmentIds[0] || null,
@@ -2741,9 +2930,8 @@ function UserDialog({
       iiko_employee_code: String(form.get("iiko_employee_code") || "") || null,
       active: form.get("active") === "on",
     };
-    if (user && currentUser.role !== "developer") {
-      delete (payload as Partial<typeof payload>).role;
-    }
+    // Roles are not assigned by hand: a new person is a task executor until an admin changes it.
+    if (!user) payload.role = "employee";
     try {
       await api(user ? `/api/users/${user.id}` : "/api/users", {
         method: user ? "PATCH" : "POST",
@@ -2765,7 +2953,7 @@ function UserDialog({
             {user ? "Профиль сотрудника" : "Новый сотрудник"}
           </DialogTitle>
           <DialogDescription>
-            Доступ, роль и связь с показателями iiko.
+            Имя, точка и Telegram — чтобы назначать задачи по имени.
           </DialogDescription>
         </DialogHeader>
         {error && (
@@ -2800,29 +2988,14 @@ function UserDialog({
                 className="bg-white"
               />
             </Field>
-            <Field label="Роль">
-              <NativeSelect className="w-full">
-                <select
-                  name="role"
-                  value={role}
-                  onChange={(event) => {
-                    const nextRole = event.target.value as Role;
-                    setRole(nextRole);
-                    setAllDepartments(isNetworkRole(nextRole));
-                  }}
-                  disabled={currentUser.role !== "developer" || user?.role === "developer"}
-                >
-                  {roleOptions.map((option) => (
-                    <NativeSelectOption
-                      key={option.value}
-                      value={option.value}
-                      disabled={option.disabled}
-                    >
-                      {option.label}
-                    </NativeSelectOption>
-                  ))}
-                </select>
-              </NativeSelect>
+            <Field label="Telegram-ник">
+              <Input
+                name="telegram_username"
+                defaultValue={user?.telegram_username || ""}
+                placeholder="@nickname"
+                className="bg-white"
+                autoComplete="off"
+              />
             </Field>
             <Field label="Имя в iiko">
               <Input
@@ -3355,6 +3528,219 @@ function AnalyticsTable({
   );
 }
 
+function SettingsView({
+  onNotice,
+}: {
+  onNotice: (message: string) => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [token, setToken] = useState("");
+  const [showToken, setShowToken] = useState(false);
+  const [error, setError] = useState("");
+  const [bot, setBot] = useState<{ username?: string; name?: string } | null>(
+    null,
+  );
+  const [configured, setConfigured] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    api<{
+      settings: {
+        configured: boolean;
+        bot: { username?: string; name?: string } | null;
+      };
+    }>("/api/telegram/settings")
+      .then((result) => {
+        setConfigured(Boolean(result.settings?.configured));
+        setBot(result.settings?.bot || null);
+      })
+      .catch((e) => setError(errorText(e)))
+      .finally(() => setLoading(false));
+  };
+  useEffect(load, []);
+
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      const result = await api<{ settings: { configured: boolean } }>(
+        "/api/telegram/settings",
+        {
+          method: "PUT",
+          body: JSON.stringify({ token: token.trim() }),
+        },
+      );
+      setConfigured(Boolean(result.settings?.configured));
+      setToken("");
+      onNotice("Telegram-бот подключён");
+      load();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const disable = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      await api("/api/telegram/settings", {
+        method: "PUT",
+        body: JSON.stringify({ token: "" }),
+      });
+      setConfigured(false);
+      setBot(null);
+      onNotice("Уведомления в Telegram отключены");
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <PageIntro
+        eyebrow="Настройки платформы"
+        title="Настройки"
+        description="Подключите Telegram-бота, чтобы команда получала уведомления о новых задачах, смене статуса и просрочках."
+      />
+      {error && (
+        <Alert variant="destructive" className="mb-5">
+          <X className="size-4" />
+          <AlertTitle>Не удалось выполнить</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+      <div className="grid gap-5 lg:grid-cols-[1.15fr_.85fr]">
+        <Card className="surface">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Send className="size-4 text-primary" /> Telegram-бот
+            </CardTitle>
+            <CardDescription>
+              Бот отправляет уведомления лично сотруднику: новая задача,
+              изменение статуса, приближение и просрочка дедлайна.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-muted/40 p-4">
+              <Badge variant={configured ? "secondary" : "outline"}>
+                {configured ? "Подключён" : "Не подключён"}
+              </Badge>
+              {bot?.username ? (
+                <span className="text-sm font-semibold">
+                  @{bot.username}
+                  {bot.name ? (
+                    <span className="text-muted-foreground"> · {bot.name}</span>
+                  ) : null}
+                </span>
+              ) : (
+                <span className="text-sm text-muted-foreground">
+                  Токен бота ещё не задан
+                </span>
+              )}
+            </div>
+            {loading ? (
+              <Skeleton className="h-24 rounded-xl" />
+            ) : (
+              <form className="grid gap-4" onSubmit={save}>
+                <Field label="Токен бота от @BotFather">
+                  <div className="flex gap-2">
+                    <Input
+                      value={token}
+                      type={showToken ? "text" : "password"}
+                      onChange={(event) => setToken(event.target.value)}
+                      placeholder="123456789:AAExampleTokenFromBotFather"
+                      className="bg-white"
+                      autoComplete="off"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="shrink-0"
+                      onClick={() => setShowToken((current) => !current)}
+                    >
+                      {showToken ? "Скрыть" : "Показать"}
+                    </Button>
+                  </div>
+                </Field>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="submit" className="gap-2" disabled={saving || !token.trim()}>
+                    {saving ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Check className="size-4" />
+                    )}
+                    Сохранить токен
+                  </Button>
+                  {configured && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="gap-2"
+                      disabled={saving}
+                      onClick={disable}
+                    >
+                      <X className="size-4" /> Отключить
+                    </Button>
+                  )}
+                </div>
+              </form>
+            )}
+          </CardContent>
+        </Card>
+        <Card className="surface">
+          <CardHeader>
+            <CardTitle>Как подключить</CardTitle>
+            <CardDescription>Три шага, каждая занимает минуту.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4 text-sm">
+            <ol className="grid gap-4">
+              <li className="flex gap-3">
+                <span className="grid size-6 shrink-0 place-items-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+                  1
+                </span>
+                <span>
+                  Напишите <b>@BotFather</b> в Telegram команду{" "}
+                  <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+                    /newbot
+                  </code>{" "}
+                  и получите токен.
+                </span>
+              </li>
+              <li className="flex gap-3">
+                <span className="grid size-6 shrink-0 place-items-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+                  2
+                </span>
+                <span>
+                  Вставьте токен слева и сохраните — бот сразу начнёт принимать
+                  привязки.
+                </span>
+              </li>
+              <li className="flex gap-3">
+                <span className="grid size-6 shrink-0 place-items-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+                  3
+                </span>
+                <span>
+                  В разделе «Команда» укажите сотрудникам их Telegram-ник, а
+                  сотрудник нажмёт кнопку привязки в своём профиле.
+                </span>
+              </li>
+            </ol>
+            <div className="rounded-xl border bg-muted/40 p-4 text-xs leading-5 text-muted-foreground">
+              Просроченные задачи проверяются каждые 10 минут. Повторное
+              уведомление по одной задаче не отправляется.
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </>
+  );
+}
+
 function ProfileView({
   user,
   onPasswordChanged,
@@ -3364,6 +3750,48 @@ function ProfileView({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [tgBusy, setTgBusy] = useState(false);
+  const [tgError, setTgError] = useState("");
+  const [tgLink, setTgLink] = useState("");
+  const [tgLinked, setTgLinked] = useState(Boolean(user.telegram_linked));
+  const [tgNick, setTgNick] = useState(user.telegram_username || "");
+  useEffect(() => {
+    api<{ linked: boolean; telegram_username: string | null }>(
+      "/api/telegram/link",
+    )
+      .then((result) => {
+        setTgLinked(Boolean(result.linked));
+        setTgNick(result.telegram_username || "");
+      })
+      .catch(() => undefined);
+  }, []);
+  const createLink = async () => {
+    setTgBusy(true);
+    setTgError("");
+    try {
+      const result = await api<{ link: string }>("/api/telegram/link", {
+        method: "POST",
+      });
+      setTgLink(result.link);
+    } catch (e) {
+      setTgError(errorText(e));
+    } finally {
+      setTgBusy(false);
+    }
+  };
+  const unlink = async () => {
+    setTgBusy(true);
+    setTgError("");
+    try {
+      await api("/api/telegram/link", { method: "DELETE" });
+      setTgLinked(false);
+      setTgLink("");
+    } catch (e) {
+      setTgError(errorText(e));
+    } finally {
+      setTgBusy(false);
+    }
+  };
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setBusy(true);
@@ -3419,6 +3847,14 @@ function ProfileView({
                   {user.iiko_employee_code || "Не привязано"}
                 </span>
               </InfoTile>
+              <InfoTile label="Telegram">
+                <span className="flex items-center gap-2 font-semibold">
+                  {tgNick ? `@${tgNick}` : "Ник не указан"}
+                  <Badge variant={tgLinked ? "secondary" : "outline"}>
+                    {tgLinked ? "Уведомления включены" : "Не привязан"}
+                  </Badge>
+                </span>
+              </InfoTile>
             </div>
           </CardContent>
         </Card>
@@ -3464,6 +3900,85 @@ function ProfileView({
                 Обновить пароль
               </Button>
             </form>
+          </CardContent>
+        </Card>
+        <Card className="surface lg:col-span-2">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Send className="size-4 text-primary" /> Уведомления в Telegram
+            </CardTitle>
+            <CardDescription>
+              Бот пришлёт вам новую задачу, смену статуса и напоминание о
+              просроченном дедлайне.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {tgError && (
+              <Alert variant="destructive">
+                <X className="size-4" />
+                <AlertDescription>{tgError}</AlertDescription>
+              </Alert>
+            )}
+            {tgLinked ? (
+              <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-muted/40 p-4">
+                <Badge variant="secondary">Уведомления включены</Badge>
+                <span className="text-sm text-muted-foreground">
+                  {tgNick
+                    ? `Аккаунт @${tgNick} привязан.`
+                    : "Аккаунт Telegram привязан."}
+                </span>
+                <Button
+                  variant="outline"
+                  className="ml-auto gap-2"
+                  disabled={tgBusy}
+                  onClick={unlink}
+                >
+                  {tgBusy ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <X className="size-4" />
+                  )}{" "}
+                  Отключить
+                </Button>
+              </div>
+            ) : (
+              <div className="grid gap-4">
+                <p className="text-sm text-muted-foreground">
+                  {tgNick
+                    ? `Ваш ник в системе — @${tgNick}. Нажмите кнопку и отправьте боту команду /start.`
+                    : "Ник Telegram не указан. Попросите руководителя добавить его в вашем профиле — либо воспользуйтесь персональной ссылкой ниже."}
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    className="gap-2"
+                    disabled={tgBusy}
+                    onClick={createLink}
+                  >
+                    {tgBusy ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Send className="size-4" />
+                    )}{" "}
+                    Получить ссылку привязки
+                  </Button>
+                  {tgLink && (
+                    <a
+                      href={tgLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-sm font-semibold text-primary underline underline-offset-4"
+                    >
+                      Открыть Telegram и нажать /start
+                    </a>
+                  )}
+                </div>
+                {tgLink && (
+                  <p className="text-xs text-muted-foreground">
+                    Ссылка действует 15 минут.
+                  </p>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
