@@ -438,13 +438,14 @@ app.get('/api/users', authMiddleware, requireRoles('developer', 'supervisor', 'm
 app.post('/api/users', authMiddleware, requireRoles('developer', 'manager'), asyncHandler(async (req, res) => {
   const body = req.body || {}; const role = normalizeRole(body.role); const username = normalizeUsername(body.username); const name = boundedString(body.full_name, 'full_name', 200, true);
   const departmentName = boundedString(body.department_name, 'department_name', 200); const iikoName = boundedString(body.iiko_employee_name, 'iiko_employee_name', 200); const iikoCode = boundedString(body.iiko_employee_code, 'iiko_employee_code', 100);
+  const active = body.active === undefined ? true : body.active; if (typeof active !== 'boolean') fail(400, 'Поле active должно быть boolean', 'VALIDATION_ERROR');
   validatePassword(body.password);
   if (req.user.role === 'manager' && role !== 'employee') fail(403, 'Менеджер может создавать только сотрудников', 'FORBIDDEN');
   const scope = scopeForRequest(body, null, role, req.user.role === 'manager' ? req.user : null);
   await ensureIikoCodeAvailable(iikoCode, scope);
   const departmentId = scope.all ? null : scope.ids[0];
   try {
-    const result = await pool.query(`INSERT INTO users (id, username, full_name, "role", department_id, department_name, department_ids, all_departments, iiko_employee_name, iiko_employee_code, active, password_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,TRUE,$11) RETURNING ${USER_COLUMNS}`, [crypto.randomUUID(), username, name, role, departmentId, departmentName, scope.ids, scope.all, iikoName, iikoCode, await hashPassword(body.password)]);
+    const result = await pool.query(`INSERT INTO users (id, username, full_name, "role", department_id, department_name, department_ids, all_departments, iiko_employee_name, iiko_employee_code, active, password_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING ${USER_COLUMNS}`, [crypto.randomUUID(), username, name, role, departmentId, departmentName, scope.ids, scope.all, iikoName, iikoCode, active, await hashPassword(body.password)]);
     return res.status(201).json({ success: true, user: userView(result.rows[0]) });
   } catch (error) {
     if (error.code === '23505') fail(409, 'Пользователь с таким логином уже существует', 'USERNAME_EXISTS');
