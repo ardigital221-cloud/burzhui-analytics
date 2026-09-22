@@ -3,7 +3,7 @@ services:
     name: burzhui-analytics
     runtime: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npx --yes pnpm@11.19.0 install --frozen-lockfile && npx --yes pnpm@11.19.0 build
     startCommand: npm start
     envVars:
       - key: IIKO_HOST

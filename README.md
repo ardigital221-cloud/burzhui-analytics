@@ -1,10 +1,19 @@
-# 🌯 BURЖУЙ Analytics Live Dashboard
+# BURЖУЙ Команда
 
-Интерактивная панель мониторинга продаж, чеков, кассовых смен и персонала сети быстрого питания **«BURЖУЙ»** с прямой интеграцией с сервером **iikoRMS / iikoOffice API**.
+Защищённый внутренний кабинет сети **«BURЖУЙ»**: персональные задачи, фотоотчёты, управление сотрудниками и аналитика iikoRMS.
 
 ---
 
 ## 🚀 Возможности
+
+0. **Личные кабинеты и задачи:**
+   - `developer` — полный доступ, включая создание управляющих, менеджеров и сотрудников.
+   - `supervisor` («Управляющий») — вся сеть, аналитика и задачи; раздел команды и изменение пользователей недоступны.
+   - `manager` («Менеджер») — задачи в назначенных точках и создание/изменение сотрудников в пределах своего доступа.
+   - `employee` («Сотрудник») — только свои задачи и персональные показатели iiko.
+   - Для менеджера или сотрудника можно назначить несколько точек либо всю сеть.
+   - Назначение задач, статусы, дедлайны, приоритеты, комментарии и фотоотчёты.
+   - Сотрудник видит назначенные задачи и только свои показатели iiko.
 
 1. **Выбор любой торговой точки сети (Point Selector):**
    - Переключение между точками: `B-1`, `B-2`, `B-3`, `B-5`, `В-10`, `В-11`, `В-12`, `В-14`, `Б19 (Батыр Молл)` и др.
@@ -38,7 +47,8 @@
 
 * **Backend:** Node.js и Express с PostgreSQL, защищёнными личными кабинетами, задачами и кэшированием токенов iiko.
 * **Безопасность:** HttpOnly-сессии на SHA-256, scrypt-пароли, RBAC, same-origin для mutating API, Helmet/CSP и rate limit входа.
-* **Frontend:** Mobile-first SPA на чистом CSS, Chart.js и Vanilla JS.
+* **Frontend:** React 19, TypeScript, Vite, Tailwind CSS 4, ReUI `base-nova` и Recharts.
+* **UI:** Компоненты ReUI хранятся в репозитории по модели copy-and-own и используются по MIT-лицензии.
 * **Хостинг:** Render.com (готов к развертыванию через `render.yaml`).
 
 ---
@@ -65,11 +75,12 @@
 git clone https://github.com/ardigital221-cloud/burzhui-analytics.git
 cd burzhui-analytics
 
-# Установить зависимости (если есть npm)
-npm install
+# Установить зависимости и собрать React-клиент
+npx --yes pnpm@11.19.0 install --frozen-lockfile
+npx --yes pnpm@11.19.0 build
 
 # Скопировать .env.example в .env и заполнить локальными значениями.
-# Запустить сервер
+# Запустить Express/PostgreSQL сервер
 npm start
 ```
 
@@ -79,7 +90,7 @@ npm start
 
 ## 🌐 Развертывание на Render.com
 
-Проект содержит готовый файл `render.yaml` (Blueprint):
+Проект содержит готовый файл `render.yaml` (Blueprint). Для уже созданного Web Service задайте Build Command: `npx --yes pnpm@11.19.0 install --frozen-lockfile && npx --yes pnpm@11.19.0 build`; Start Command: `npm start`.
 1. Откройте [Render Dashboard](https://dashboard.render.com).
 2. Нажмите **New +** -> **Blueprint**.
 3. Выберите репозиторий `ardigital221-cloud/burzhui-analytics`.

@@ -41,9 +41,9 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", 'https://cdn.jsdelivr.net'],
-      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-      fontSrc: ["'self'", 'https://fonts.gstatic.com'], imgSrc: ["'self'", 'data:', 'blob:'], connectSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      fontSrc: ["'self'"], imgSrc: ["'self'", 'data:', 'blob:'], connectSrc: ["'self'"],
       objectSrc: ["'none'"], baseUri: ["'self'"], frameAncestors: ["'none'"]
     }
   },
@@ -87,7 +87,51 @@ function normalizeUsername(value) {
   if (!/^[a-zа-яё0-9._-]{3,64}$/iu.test(username)) fail(400, 'Некорректный логин', 'INVALID_USERNAME');
   return username;
 }
-function normalizeRole(value) { if (!['developer', 'manager', 'employee'].includes(value)) fail(400, 'Недопустимая роль', 'INVALID_ROLE'); return value; }
+function normalizeRole(value) { if (!['developer', 'supervisor', 'manager', 'employee'].includes(value)) fail(400, 'Недопустимая роль', 'INVALID_ROLE'); return value; }
+function isNetworkRole(role) { return role === 'developer' || role === 'supervisor'; }
+function isUuid(value) { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
+function normalizeDepartmentIds(value, name = 'department_ids') {
+  if (!Array.isArray(value)) fail(400, `Поле ${name} должно быть массивом UUID`, 'VALIDATION_ERROR');
+  const ids = [...new Set(value.map((item) => {
+    if (typeof item !== 'string' || !isUuid(item.trim())) fail(400, `Поле ${name} содержит некорректный UUID`, 'VALIDATION_ERROR');
+    return item.trim();
+  }))];
+  if (ids.length > 45) fail(400, `Поле ${name} содержит слишком много точек`, 'VALIDATION_ERROR');
+  return ids;
+}
+function legacyDepartmentIds(row) {
+  if (Array.isArray(row && row.department_ids)) return row.department_ids.filter(Boolean);
+  return row && row.department_id ? [row.department_id] : [];
+}
+function userScope(row) {
+  return { all: row && row.role === 'developer' ? true : Boolean(row && row.all_departments), ids: legacyDepartmentIds(row) };
+}
+function scopeAllows(scope, departmentId) { return Boolean(scope.all || (departmentId && scope.ids.includes(departmentId))); }
+function scopeIsSubset(child, parent) { return Boolean(parent.all || (!child.all && !parent.all && child.ids.every((id) => parent.ids.includes(id)))); }
+function scopesOverlap(left, right) {
+  return Boolean(left.all || right.all || left.ids.some((id) => right.ids.includes(id)));
+}
+function scopeForRequest(body, current, role, actor) {
+  if (isNetworkRole(role)) return { all: true, ids: [] };
+  const hasIds = Object.prototype.hasOwnProperty.call(body || {}, 'department_ids');
+  const hasAll = Object.prototype.hasOwnProperty.call(body || {}, 'all_departments');
+  const hasLegacy = Object.prototype.hasOwnProperty.call(body || {}, 'department_id');
+  let ids = hasIds ? normalizeDepartmentIds(body.department_ids) : (hasLegacy ? (body.department_id ? normalizeDepartmentIds([boundedString(body.department_id, 'department_id', 128)]) : []) : legacyDepartmentIds(current));
+  let all = hasAll ? body.all_departments : (hasIds || hasLegacy ? false : (current ? Boolean(current.all_departments) : isNetworkRole(role)));
+  if (typeof all !== 'boolean') fail(400, 'Поле all_departments должно быть boolean', 'VALIDATION_ERROR');
+  if (!hasIds && hasLegacy && !hasAll) all = false;
+  if (isNetworkRole(role) && !hasIds && !hasLegacy && !hasAll) all = true;
+  if (all) ids = [];
+  if (!all && !ids.length) fail(400, 'Назначьте пользователю хотя бы одну точку или всю сеть', 'SCOPE_REQUIRED');
+  const scope = { all, ids };
+  if (actor && actor.role === 'manager' && !scopeIsSubset(scope, userScope(actor))) fail(403, 'Область сотрудника выходит за пределы ваших точек', 'FORBIDDEN');
+  return scope;
+}
+async function ensureIikoCodeAvailable(code, scope, excludeId = null) {
+  if (!code) return;
+  const rows = (await pool.query('SELECT id, role, department_ids, all_departments, department_id FROM users WHERE iiko_employee_code = $1 AND ($2::uuid IS NULL OR id <> $2)', [code, excludeId])).rows;
+  if (rows.some((row) => scopesOverlap(scope, userScope(row)))) fail(409, 'Этот табельный код iiko уже используется в пересекающейся области точек', 'IIKO_CODE_EXISTS');
+}
 function normalizeStatus(value) { if (!['new', 'in_progress', 'review', 'done'].includes(value)) fail(400, 'Недопустимый статус задачи', 'INVALID_STATUS'); return value; }
 function normalizePriority(value) { if (!['low', 'normal', 'high', 'urgent'].includes(value)) fail(400, 'Недопустимый приоритет задачи', 'INVALID_PRIORITY'); return value; }
 function idValue(value, label = 'id') { const number = Number(value); if (!Number.isSafeInteger(number) || number < 1) fail(400, `Некорректный ${label}`, 'INVALID_ID'); return number; }
@@ -124,10 +168,12 @@ async function verifyPassword(password, encoded) {
   } catch (_) { return false; }
 }
 
-const USER_COLUMNS = `id, username, full_name, "role" AS role, department_id, department_name, iiko_employee_name, iiko_employee_code, active, password_hash, created_at, updated_at`;
-const USER_COLUMNS_QUALIFIED = `u.id, u.username, u.full_name, u."role" AS role, u.department_id, u.department_name, u.iiko_employee_name, u.iiko_employee_code, u.active, u.password_hash, u.created_at, u.updated_at`;
+const USER_COLUMNS = `id, username, full_name, "role" AS role, department_id, department_name, department_ids, all_departments, iiko_employee_name, iiko_employee_code, active, password_hash, created_at, updated_at`;
+const USER_COLUMNS_QUALIFIED = `u.id, u.username, u.full_name, u."role" AS role, u.department_id, u.department_name, u.department_ids, u.all_departments, u.iiko_employee_name, u.iiko_employee_code, u.active, u.password_hash, u.created_at, u.updated_at`;
 function userView(row) {
-  return row && { id: row.id, username: row.username, full_name: row.full_name, role: row.role, department_id: row.department_id, department_name: row.department_name, iiko_employee_name: row.iiko_employee_name, iiko_employee_code: row.iiko_employee_code, active: row.active, created_at: row.created_at, updated_at: row.updated_at };
+  if (!row) return row;
+  const scope = userScope(row);
+  return { id: row.id, username: row.username, full_name: row.full_name, role: row.role, department_id: row.department_id, department_name: row.department_name, department_ids: scope.ids, all_departments: scope.all, iiko_employee_name: row.iiko_employee_name, iiko_employee_code: row.iiko_employee_code, active: row.active, created_at: row.created_at, updated_at: row.updated_at };
 }
 async function getUserById(id) { return (await pool.query(`SELECT ${USER_COLUMNS} FROM users WHERE id = $1`, [id])).rows[0] || null; }
 async function createSession(userId) {
@@ -148,16 +194,36 @@ async function authMiddleware(req, res, next) {
 }
 function requireRoles(...roles) { return (req, res, next) => roles.includes(req.user && req.user.role) ? next() : sendError(res, 403, 'Недостаточно прав', 'FORBIDDEN'); }
 function scopedDepartment(req, value = 'ALL') {
-  if (req.user.role !== 'manager') return value === 'ALL' ? null : value;
-  if (!req.user.department_id) fail(403, 'Для пользователя не назначен отдел', 'FORBIDDEN');
-  if (value !== 'ALL' && value !== req.user.department_id) fail(403, 'Нет доступа к этому отделу', 'FORBIDDEN');
-  return req.user.department_id;
+  const scope = userScope(req.user);
+  if (value === 'ALL') {
+    if (scope.all) return null;
+    if (!scope.ids.length) fail(403, 'Для пользователя не назначены точки', 'FORBIDDEN');
+    return scope.ids.length === 1 ? scope.ids[0] : scope.ids;
+  }
+  if (!isUuid(value) || !scopeAllows(scope, value)) fail(403, 'Нет доступа к этой точке', 'FORBIDDEN');
+  return value;
 }
 
 const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY, username VARCHAR(64) NOT NULL UNIQUE, full_name VARCHAR(200) NOT NULL, "role" VARCHAR(20) NOT NULL CHECK ("role" IN ('developer','manager','employee')), department_id VARCHAR(128), department_name VARCHAR(200), iiko_employee_name VARCHAR(200), iiko_employee_code VARCHAR(100), active BOOLEAN NOT NULL DEFAULT TRUE, password_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY, username VARCHAR(64) NOT NULL UNIQUE, full_name VARCHAR(200) NOT NULL, "role" VARCHAR(20) NOT NULL CHECK ("role" IN ('developer','supervisor','manager','employee')), department_id VARCHAR(128), department_name VARCHAR(200), department_ids TEXT[] NOT NULL DEFAULT '{}'::text[], all_departments BOOLEAN NOT NULL DEFAULT FALSE, iiko_employee_name VARCHAR(200), iiko_employee_code VARCHAR(100), active BOOLEAN NOT NULL DEFAULT TRUE, password_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+ALTER TABLE users ADD COLUMN IF NOT EXISTS department_ids TEXT[];
+ALTER TABLE users ADD COLUMN IF NOT EXISTS all_departments BOOLEAN;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS iiko_employee_code VARCHAR(100);
-CREATE UNIQUE INDEX IF NOT EXISTS users_department_iiko_code_unique ON users(department_id, iiko_employee_code) WHERE department_id IS NOT NULL AND iiko_employee_code IS NOT NULL;
+DO $$ DECLARE item RECORD; BEGIN
+  FOR item IN SELECT conname FROM pg_constraint WHERE conrelid = 'users'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) ILIKE '%role%'
+  LOOP EXECUTE format('ALTER TABLE users DROP CONSTRAINT IF EXISTS %I', item.conname); END LOOP;
+END $$;
+ALTER TABLE users ADD CONSTRAINT users_role_check CHECK ("role" IN ('developer','supervisor','manager','employee'));
+UPDATE users SET department_ids = CASE WHEN NULLIF(BTRIM(department_id), '') IS NULL THEN '{}'::text[] ELSE ARRAY[department_id]::text[] END WHERE department_ids IS NULL;
+UPDATE users SET all_departments = ("role" IN ('developer','supervisor')) WHERE all_departments IS NULL;
+UPDATE users SET all_departments = TRUE, department_ids = '{}'::text[] WHERE "role" = 'developer';
+UPDATE users SET department_id = department_ids[1] WHERE department_id IS NULL AND COALESCE(array_length(department_ids, 1), 0) > 0;
+ALTER TABLE users ALTER COLUMN department_ids SET DEFAULT '{}'::text[];
+ALTER TABLE users ALTER COLUMN department_ids SET NOT NULL;
+ALTER TABLE users ALTER COLUMN all_departments SET DEFAULT FALSE;
+ALTER TABLE users ALTER COLUMN all_departments SET NOT NULL;
+DROP INDEX IF EXISTS users_department_iiko_code_unique;
+CREATE INDEX IF NOT EXISTS users_iiko_employee_code_idx ON users(iiko_employee_code) WHERE iiko_employee_code IS NOT NULL;
 CREATE TABLE IF NOT EXISTS sessions (token_hash CHAR(64) PRIMARY KEY, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
 CREATE INDEX IF NOT EXISTS sessions_expires_idx ON sessions(expires_at);
 CREATE TABLE IF NOT EXISTS tasks (id BIGSERIAL PRIMARY KEY, title VARCHAR(200) NOT NULL, description TEXT, status VARCHAR(20) NOT NULL DEFAULT 'new' CHECK (status IN ('new','in_progress','review','done')), priority VARCHAR(20) NOT NULL DEFAULT 'normal' CHECK (priority IN ('low','normal','high','urgent')), department_id VARCHAR(128), department_name VARCHAR(200), creator_id UUID NOT NULL REFERENCES users(id), assignee_id UUID REFERENCES users(id), due_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
@@ -182,7 +248,7 @@ async function initializeDatabase() {
     const count = await client.query('SELECT COUNT(*)::int AS count FROM users');
     if (count.rows[0].count === 0) {
       const hash = await hashPassword(process.env.APP_ADMIN_PASSWORD);
-      await client.query('INSERT INTO users (id, username, full_name, "role", active, password_hash) VALUES ($1, $2, $3, \'developer\', TRUE, $4)', [crypto.randomUUID(), normalizeUsername(process.env.APP_ADMIN_USERNAME), boundedString(process.env.APP_ADMIN_NAME, 'APP_ADMIN_NAME', 200, true), hash]);
+      await client.query('INSERT INTO users (id, username, full_name, "role", department_ids, all_departments, active, password_hash) VALUES ($1, $2, $3, \'developer\', \'{}\'::text[], TRUE, TRUE, $4)', [crypto.randomUUID(), normalizeUsername(process.env.APP_ADMIN_USERNAME), boundedString(process.env.APP_ADMIN_NAME, 'APP_ADMIN_NAME', 200, true), hash]);
       console.log('[BURЖУЙ] Создан первый developer из переменных окружения.');
     }
     await client.query('COMMIT');
@@ -193,9 +259,10 @@ async function getTask(id) {
   return (await pool.query(`SELECT t.*, cu.full_name AS creator_name, au.full_name AS assignee_name FROM tasks t JOIN users cu ON cu.id = t.creator_id LEFT JOIN users au ON au.id = t.assignee_id WHERE t.id = $1`, [id])).rows[0] || null;
 }
 function canAccessTask(task, user) {
-  if (!task) return false; if (user.role === 'developer') return true;
-  if (user.role === 'manager') return Boolean(user.department_id && user.department_id === task.department_id);
-  return task.assignee_id === user.id || task.creator_id === user.id;
+  if (!task) return false;
+  if (user.role === 'developer') return true;
+  if (user.role === 'supervisor' || user.role === 'manager') return scopeAllows(userScope(user), task.department_id);
+  return user.role === 'employee' && task.assignee_id === user.id;
 }
 async function taskDetail(task, user) {
   if (!canAccessTask(task, user)) fail(403, 'Нет доступа к задаче', 'FORBIDDEN');
@@ -210,9 +277,19 @@ async function taskEvent(taskId, userId, type, payload = {}) {
 }
 async function listTasks(user) {
   let query = 'SELECT t.*, cu.full_name AS creator_name, au.full_name AS assignee_name FROM tasks t JOIN users cu ON cu.id = t.creator_id LEFT JOIN users au ON au.id = t.assignee_id'; const params = [];
-  if (user.role === 'manager') { query += ' WHERE t.department_id = $1'; params.push(user.department_id); }
-  if (user.role === 'employee') { query += ' WHERE (t.assignee_id = $1 OR t.creator_id = $1)'; params.push(user.id); }
+  if (user.role === 'supervisor') { const scope = userScope(user); if (!scope.all) { query += ' WHERE t.department_id = ANY($1::text[])'; params.push(scope.ids); } }
+  if (user.role === 'manager') { const scope = userScope(user); if (scope.all) query += ' WHERE t.department_id IS NOT NULL'; else { query += ' WHERE t.department_id = ANY($1::text[])'; params.push(scope.ids); } }
+  if (user.role === 'employee') { query += ' WHERE t.assignee_id = $1'; params.push(user.id); }
   query += ' ORDER BY t.updated_at DESC, t.id DESC'; return (await pool.query(query, params)).rows;
+}
+function validateTaskDepartment(user, departmentId) {
+  if (!departmentId || !isUuid(departmentId)) fail(400, 'Для задачи нужна корректная точка', 'VALIDATION_ERROR');
+  if (!scopeAllows(userScope(user), departmentId)) fail(403, 'Нет доступа к этой точке', 'FORBIDDEN');
+}
+function validateTaskAssignee(assignee, departmentId) {
+  if (!assignee || !assignee.active) fail(400, 'Исполнитель не найден или деактивирован', 'INVALID_ASSIGNEE');
+  if (assignee.role !== 'employee') fail(400, 'Задачу можно назначить только сотруднику', 'INVALID_ASSIGNEE');
+  if (!scopeAllows(userScope(assignee), departmentId)) fail(400, 'Исполнитель не привязан к выбранной точке', 'INVALID_ASSIGNEE');
 }
 
 function validImage(file) {
@@ -269,7 +346,8 @@ async function fetchDepartments() {
 }
 function salesFilters(dates, departmentId, cashier, cashierCode) {
   const filters = { 'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: dates.from, to: dates.toInclusive }, OrderDeleted: { filterType: 'IncludeValues', values: ['NOT_DELETED'] } };
-  if (departmentId && departmentId !== 'ALL') filters['Department.Id'] = { filterType: 'IncludeValues', values: [departmentId] };
+  if (Array.isArray(departmentId) && departmentId.length) filters['Department.Id'] = { filterType: 'IncludeValues', values: departmentId };
+  else if (departmentId && departmentId !== 'ALL') filters['Department.Id'] = { filterType: 'IncludeValues', values: [departmentId] };
   if (cashier) filters.Cashier = { filterType: 'IncludeValues', values: [cashier] };
   if (cashierCode) filters['Cashier.Code'] = { filterType: 'IncludeValues', values: [cashierCode] };
   return filters;
@@ -319,8 +397,8 @@ async function fetchRanking(departmentId, dates) {
   return { success: true, ranking: rows.sort((a, b) => (b.DishDiscountSumInt || 0) - (a.DishDiscountSumInt || 0)) };
 }
 async function fetchMyMetrics(user, dates) {
-  if (!user.department_id || !user.iiko_employee_code) fail(400, 'Для пользователя не заданы точка и табельный код iiko', 'PROFILE_INCOMPLETE');
-  const filters = salesFilters(dates, user.department_id, null, user.iiko_employee_code);
+  if ((!userScope(user).all && !userScope(user).ids.length) || !user.iiko_employee_code) fail(400, 'Для пользователя не заданы точки и табельный код iiko', 'PROFILE_INCOMPLETE');
+  const filters = salesFilters(dates, userScope(user).all ? null : userScope(user).ids, null, user.iiko_employee_code);
   const [summary, upsell] = await Promise.all([
     olap({ reportType: 'SALES', buildSummary: false, groupByRowFields: ['Cashier', 'Cashier.Code'], aggregateFields: ['DishDiscountSumInt', 'UniqOrderId', 'DishDiscountSumInt.average'], filters }),
     olap({ reportType: 'SALES', buildSummary: false, groupByRowFields: ['DishGroup.TopParent', 'DishType'], aggregateFields: ['DishAmountInt'], filters })
@@ -352,47 +430,59 @@ app.patch('/api/auth/password', authMiddleware, asyncHandler(async (req, res) =>
   await pool.query('DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2', [req.user.id, req.sessionTokenHash]); return res.json({ success: true });
 }));
 
-app.get('/api/users', authMiddleware, asyncHandler(async (req, res) => {
-  let query = `SELECT ${USER_COLUMNS} FROM users`; const params = [];
-  if (req.user.role === 'manager') { query += ' WHERE department_id = $1'; params.push(req.user.department_id); }
-  if (req.user.role === 'employee') { query += ' WHERE id = $1'; params.push(req.user.id); }
-  query += ' ORDER BY full_name'; return res.json({ success: true, users: (await pool.query(query, params)).rows.map(userView) });
+app.get('/api/users', authMiddleware, requireRoles('developer', 'supervisor', 'manager'), asyncHandler(async (req, res) => {
+  const rows = (await pool.query(`SELECT ${USER_COLUMNS} FROM users${req.user.role === 'developer' ? '' : ' WHERE "role" = \'employee\''} ORDER BY full_name`)).rows;
+  const users = req.user.role === 'developer' ? rows : rows.filter((row) => req.user.role === 'supervisor' ? scopesOverlap(userScope(req.user), userScope(row)) : scopeIsSubset(userScope(row), userScope(req.user)));
+  return res.json({ success: true, users: users.map(userView) });
 }));
 app.post('/api/users', authMiddleware, requireRoles('developer', 'manager'), asyncHandler(async (req, res) => {
-  const role = normalizeRole(req.body && req.body.role); const username = normalizeUsername(req.body && req.body.username); const name = boundedString(req.body && req.body.full_name, 'full_name', 200, true);
-  const departmentId = boundedString(req.body && req.body.department_id, 'department_id', 128); const departmentName = boundedString(req.body && req.body.department_name, 'department_name', 200); const iikoName = boundedString(req.body && req.body.iiko_employee_name, 'iiko_employee_name', 200); const iikoCode = boundedString(req.body && req.body.iiko_employee_code, 'iiko_employee_code', 100);
-  validatePassword(req.body && req.body.password);
-  if (req.user.role === 'manager' && (role !== 'employee' || departmentId !== req.user.department_id)) fail(403, 'Менеджер может создавать только сотрудников своего отдела', 'FORBIDDEN');
+  const body = req.body || {}; const role = normalizeRole(body.role); const username = normalizeUsername(body.username); const name = boundedString(body.full_name, 'full_name', 200, true);
+  const departmentName = boundedString(body.department_name, 'department_name', 200); const iikoName = boundedString(body.iiko_employee_name, 'iiko_employee_name', 200); const iikoCode = boundedString(body.iiko_employee_code, 'iiko_employee_code', 100);
+  validatePassword(body.password);
+  if (req.user.role === 'manager' && role !== 'employee') fail(403, 'Менеджер может создавать только сотрудников', 'FORBIDDEN');
+  const scope = scopeForRequest(body, null, role, req.user.role === 'manager' ? req.user : null);
+  await ensureIikoCodeAvailable(iikoCode, scope);
+  const departmentId = scope.all ? null : scope.ids[0];
   try {
-    const result = await pool.query(`INSERT INTO users (id, username, full_name, "role", department_id, department_name, iiko_employee_name, iiko_employee_code, active, password_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,TRUE,$9) RETURNING ${USER_COLUMNS}`, [crypto.randomUUID(), username, name, role, departmentId, departmentName, iikoName, iikoCode, await hashPassword(req.body.password)]);
+    const result = await pool.query(`INSERT INTO users (id, username, full_name, "role", department_id, department_name, department_ids, all_departments, iiko_employee_name, iiko_employee_code, active, password_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,TRUE,$11) RETURNING ${USER_COLUMNS}`, [crypto.randomUUID(), username, name, role, departmentId, departmentName, scope.ids, scope.all, iikoName, iikoCode, await hashPassword(body.password)]);
     return res.status(201).json({ success: true, user: userView(result.rows[0]) });
   } catch (error) {
-    if (error.constraint === 'users_department_iiko_code_unique') fail(409, 'Этот табельный код iiko уже назначен сотруднику данной точки', 'IIKO_CODE_EXISTS');
     if (error.code === '23505') fail(409, 'Пользователь с таким логином уже существует', 'USERNAME_EXISTS');
     throw error;
   }
 }));
 app.patch('/api/users/:id', authMiddleware, asyncHandler(async (req, res) => {
-  const target = await getUserById(req.params.id); if (!target) fail(404, 'Пользователь не найден', 'NOT_FOUND');
-  const self = target.id === req.user.id; const managerOwn = req.user.role === 'manager' && target.department_id === req.user.department_id;
-  if (req.user.role !== 'developer' && !managerOwn && !(req.user.role === 'employee' && self)) fail(403, 'Недостаточно прав', 'FORBIDDEN');
-  if (req.user.role === 'manager' && target.role !== 'employee') fail(403, 'Менеджер может изменять только сотрудников своего отдела', 'FORBIDDEN');
-  if (req.user.role === 'employee' && Object.keys(req.body || {}).some((key) => !['current_password', 'password'].includes(key))) fail(403, 'Сотрудник может менять только свой пароль', 'FORBIDDEN');
+  const body = req.body || {}; const target = await getUserById(req.params.id); if (!target) fail(404, 'Пользователь не найден', 'NOT_FOUND');
+  const self = target.id === req.user.id; const targetScope = userScope(target);
+  if (req.user.role === 'supervisor') fail(403, 'Управляющий не может изменять сотрудников', 'FORBIDDEN');
+  if (req.user.role === 'manager' && (target.role !== 'employee' || !scopeIsSubset(targetScope, userScope(req.user)))) fail(403, 'Нет доступа к этому сотруднику', 'FORBIDDEN');
+  if (req.user.role === 'employee' && (!self || Object.keys(body).some((key) => !['current_password', 'password'].includes(key)))) fail(403, 'Сотрудник может менять только свой пароль', 'FORBIDDEN');
+  const nextRole = body.role === undefined ? target.role : normalizeRole(body.role);
+  if (req.user.role !== 'developer' && body.role !== undefined) fail(403, 'Только developer может менять роли', 'FORBIDDEN');
+  if (req.user.role === 'manager' && nextRole !== 'employee') fail(403, 'Менеджер может изменять только сотрудников', 'FORBIDDEN');
+  const hasScopeFields = ['department_ids', 'all_departments', 'department_id'].some((key) => Object.prototype.hasOwnProperty.call(body, key));
+  let scope = targetScope;
+  if (req.user.role !== 'employee' && (hasScopeFields || body.role !== undefined)) {
+    if (body.role !== undefined && isNetworkRole(nextRole) && !hasScopeFields) scope = { all: true, ids: [] };
+    else if (body.role !== undefined && !isNetworkRole(nextRole) && isNetworkRole(target.role) && !hasScopeFields) fail(400, 'Для этой роли назначьте точки', 'SCOPE_REQUIRED');
+    else scope = scopeForRequest(body, target, nextRole, req.user.role === 'manager' ? req.user : null);
+  }
   const fields = []; const values = []; const add = (column, value) => { fields.push(`${column} = $${values.length + 1}`); values.push(value); };
-  if (req.body.username !== undefined) add('username', normalizeUsername(req.body.username));
-  if (req.body.full_name !== undefined) add('full_name', boundedString(req.body.full_name, 'full_name', 200, true));
-  if (req.body.iiko_employee_name !== undefined) add('iiko_employee_name', boundedString(req.body.iiko_employee_name, 'iiko_employee_name', 200));
-  if (req.body.iiko_employee_code !== undefined) add('iiko_employee_code', boundedString(req.body.iiko_employee_code, 'iiko_employee_code', 100));
-  if (req.body.active !== undefined) { if (typeof req.body.active !== 'boolean') fail(400, 'Поле active должно быть boolean', 'VALIDATION_ERROR'); if (self && !req.body.active) fail(400, 'Нельзя деактивировать текущего пользователя', 'VALIDATION_ERROR'); add('active', req.body.active); }
-  if (req.body.role !== undefined) { if (req.user.role !== 'developer') fail(403, 'Только developer может менять роли', 'FORBIDDEN'); add('"role"', normalizeRole(req.body.role)); }
-  if (req.body.department_id !== undefined || req.body.department_name !== undefined) { if (req.user.role !== 'developer') fail(403, 'Только developer может менять отдел', 'FORBIDDEN'); if (req.body.department_id !== undefined) add('department_id', boundedString(req.body.department_id, 'department_id', 128)); if (req.body.department_name !== undefined) add('department_name', boundedString(req.body.department_name, 'department_name', 200)); }
-  if (req.body.password !== undefined) { if (req.user.role === 'employee' && !(await verifyPassword(req.body.current_password, req.user.password_hash))) fail(401, 'Текущий пароль неверен', 'INVALID_CREDENTIALS'); validatePassword(req.body.password); add('password_hash', await hashPassword(req.body.password)); }
+  if (body.username !== undefined) add('username', normalizeUsername(body.username));
+  if (body.full_name !== undefined) add('full_name', boundedString(body.full_name, 'full_name', 200, true));
+  if (body.department_name !== undefined) add('department_name', boundedString(body.department_name, 'department_name', 200));
+  if (body.iiko_employee_name !== undefined) add('iiko_employee_name', boundedString(body.iiko_employee_name, 'iiko_employee_name', 200));
+  if (body.iiko_employee_code !== undefined) add('iiko_employee_code', boundedString(body.iiko_employee_code, 'iiko_employee_code', 100));
+  if (body.active !== undefined) { if (typeof body.active !== 'boolean') fail(400, 'Поле active должно быть boolean', 'VALIDATION_ERROR'); if (self && !body.active) fail(400, 'Нельзя деактивировать текущего пользователя', 'VALIDATION_ERROR'); add('active', body.active); }
+  if (body.role !== undefined) add('"role"', nextRole);
+  if (req.user.role !== 'employee' && (hasScopeFields || body.role !== undefined)) { add('department_ids', scope.ids); add('all_departments', scope.all); add('department_id', scope.all ? null : scope.ids[0]); }
+  if (body.password !== undefined) { if (req.user.role === 'employee' && !(await verifyPassword(body.current_password, req.user.password_hash))) fail(401, 'Текущий пароль неверен', 'INVALID_CREDENTIALS'); validatePassword(body.password); add('password_hash', await hashPassword(body.password)); }
+  if (body.iiko_employee_code !== undefined || hasScopeFields || body.role !== undefined) await ensureIikoCodeAvailable(body.iiko_employee_code === undefined ? target.iiko_employee_code : boundedString(body.iiko_employee_code, 'iiko_employee_code', 100), scope, target.id);
   if (!fields.length) fail(400, 'Нет изменений', 'VALIDATION_ERROR'); fields.push('updated_at = NOW()'); values.push(target.id);
   let updated;
   try {
     updated = (await pool.query(`UPDATE users SET ${fields.join(', ')} WHERE id = $${values.length} RETURNING ${USER_COLUMNS}`, values)).rows[0];
   } catch (error) {
-    if (error.constraint === 'users_department_iiko_code_unique') fail(409, 'Этот табельный код iiko уже назначен сотруднику данной точки', 'IIKO_CODE_EXISTS');
     if (error.code === '23505') fail(409, 'Пользователь с таким логином уже существует', 'USERNAME_EXISTS');
     throw error;
   }
@@ -402,28 +492,36 @@ app.patch('/api/users/:id', authMiddleware, asyncHandler(async (req, res) => {
 
 app.get('/api/tasks', authMiddleware, asyncHandler(async (req, res) => res.json({ success: true, tasks: await listTasks(req.user) })));
 app.get('/api/tasks/:id', authMiddleware, asyncHandler(async (req, res) => { const task = await getTask(idValue(req.params.id)); if (!task) fail(404, 'Задача не найдена', 'NOT_FOUND'); return res.json({ success: true, task: await taskDetail(task, req.user) }); }));
-app.post('/api/tasks', authMiddleware, requireRoles('developer', 'manager'), asyncHandler(async (req, res) => {
-  const title = boundedString(req.body && req.body.title, 'title', 200, true); const description = boundedString(req.body && req.body.description, 'description', 50000); const status = normalizeStatus((req.body && req.body.status) || 'new'); const priority = normalizePriority((req.body && req.body.priority) || 'normal'); const dueAt = req.body && req.body.due_at ? new Date(req.body.due_at) : null; if (dueAt && Number.isNaN(dueAt.getTime())) fail(400, 'Некорректная дата выполнения', 'VALIDATION_ERROR'); let departmentId = boundedString(req.body && req.body.department_id, 'department_id', 128); let departmentName = boundedString(req.body && req.body.department_name, 'department_name', 200); const assigneeId = req.body && req.body.assignee_id ? String(req.body.assignee_id) : null;
-  const assignee = assigneeId ? await getUserById(assigneeId) : null; if (assigneeId && (!assignee || !assignee.active)) fail(400, 'Исполнитель не найден или деактивирован', 'INVALID_ASSIGNEE');
-  if (!departmentId && assignee) { departmentId = assignee.department_id; departmentName = assignee.department_name; }
-  if (departmentId && assignee && assignee.department_id !== departmentId) fail(400, 'Отдел задачи и исполнитель не совпадают', 'VALIDATION_ERROR');
-  if (req.user.role === 'manager') { if (assignee && assignee.department_id !== req.user.department_id) fail(403, 'Исполнитель должен быть из вашего отдела', 'FORBIDDEN'); departmentId = req.user.department_id; departmentName = req.user.department_name; }
+app.post('/api/tasks', authMiddleware, requireRoles('developer', 'supervisor', 'manager'), asyncHandler(async (req, res) => {
+  const body = req.body || {}; const title = boundedString(body.title, 'title', 200, true); const description = boundedString(body.description, 'description', 50000); const status = normalizeStatus(body.status || 'new'); const priority = normalizePriority(body.priority || 'normal'); const dueAt = body.due_at ? new Date(body.due_at) : null; if (dueAt && Number.isNaN(dueAt.getTime())) fail(400, 'Некорректная дата выполнения', 'VALIDATION_ERROR');
+  let departmentId = body.department_id ? boundedString(body.department_id, 'department_id', 128) : null; let departmentName = boundedString(body.department_name, 'department_name', 200); const assigneeId = body.assignee_id ? String(body.assignee_id) : null;
+  const assignee = assigneeId ? await getUserById(assigneeId) : null;
+  if (assignee && !departmentId) {
+    const assigneeScope = userScope(assignee);
+    if (!assigneeScope.all && assigneeScope.ids.length === 1) { departmentId = assigneeScope.ids[0]; departmentName = assignee.department_name; }
+  }
+  validateTaskDepartment(req.user, departmentId);
+  if (assigneeId) validateTaskAssignee(assignee, departmentId);
   const client = await pool.connect();
   try { await client.query('BEGIN'); const result = await client.query('INSERT INTO tasks (title,description,status,priority,department_id,department_name,creator_id,assignee_id,due_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id', [title, description, status, priority, departmentId, departmentName, req.user.id, assigneeId, dueAt]); await client.query('INSERT INTO task_events (task_id,user_id,event_type,payload) VALUES ($1,$2,$3,$4::jsonb)', [result.rows[0].id, req.user.id, 'task_created', JSON.stringify({ status, priority, due_at: dueAt })]); await client.query('COMMIT'); const task = await getTask(result.rows[0].id); return res.status(201).json({ success: true, task: await taskDetail(task, req.user) }); } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }));
 app.patch('/api/tasks/:id', authMiddleware, asyncHandler(async (req, res) => {
   const taskId = idValue(req.params.id); const task = await getTask(taskId); if (!task) fail(404, 'Задача не найдена', 'NOT_FOUND'); if (!canAccessTask(task, req.user)) fail(403, 'Нет доступа к задаче', 'FORBIDDEN');
-  const keys = Object.keys(req.body || {});
+  const body = req.body || {}; const keys = Object.keys(body);
   if (req.user.role === 'employee' && (task.assignee_id !== req.user.id || keys.some((key) => key !== 'status'))) fail(403, 'Исполнитель может менять только статус своей задачи', 'FORBIDDEN');
-  if (req.user.role === 'employee' && req.body.status === 'done') fail(403, 'Завершить задачу может только manager или developer', 'FORBIDDEN');
+  if (req.user.role === 'employee' && body.status === 'done') fail(403, 'Завершить задачу может только manager, supervisor или developer', 'FORBIDDEN');
   const fields = []; const values = []; const add = (column, value) => { fields.push(`${column} = $${values.length + 1}`); values.push(value); };
-  if (req.body.title !== undefined) add('title', boundedString(req.body.title, 'title', 200, true));
-  if (req.body.description !== undefined) add('description', boundedString(req.body.description, 'description', 50000));
-  if (req.body.status !== undefined) add('status', normalizeStatus(req.body.status));
-  if (req.body.priority !== undefined) add('priority', normalizePriority(req.body.priority));
-  if (req.body.due_at !== undefined) { const due = req.body.due_at === null ? null : new Date(req.body.due_at); if (due && Number.isNaN(due.getTime())) fail(400, 'Некорректная дата выполнения', 'VALIDATION_ERROR'); add('due_at', due); }
-  if (req.body.assignee_id !== undefined) { if (!['developer', 'manager'].includes(req.user.role)) fail(403, 'Недостаточно прав для смены исполнителя', 'FORBIDDEN'); const assignee = req.body.assignee_id ? await getUserById(String(req.body.assignee_id)) : null; if (req.body.assignee_id && (!assignee || !assignee.active)) fail(400, 'Исполнитель не найден или деактивирован', 'INVALID_ASSIGNEE'); if (assignee && req.user.role === 'manager' && assignee.department_id !== req.user.department_id) fail(403, 'Исполнитель должен быть из вашего отдела', 'FORBIDDEN'); add('assignee_id', assignee ? assignee.id : null); }
-  if (req.body.department_id !== undefined || req.body.department_name !== undefined) { if (req.user.role !== 'developer') fail(403, 'Только developer может менять отдел задачи', 'FORBIDDEN'); if (req.body.department_id !== undefined) add('department_id', boundedString(req.body.department_id, 'department_id', 128)); if (req.body.department_name !== undefined) add('department_name', boundedString(req.body.department_name, 'department_name', 200)); }
+  if (body.title !== undefined) add('title', boundedString(body.title, 'title', 200, true));
+  if (body.description !== undefined) add('description', boundedString(body.description, 'description', 50000));
+  if (body.status !== undefined) add('status', normalizeStatus(body.status));
+  if (body.priority !== undefined) add('priority', normalizePriority(body.priority));
+  if (body.due_at !== undefined) { const due = body.due_at === null ? null : new Date(body.due_at); if (due && Number.isNaN(due.getTime())) fail(400, 'Некорректная дата выполнения', 'VALIDATION_ERROR'); add('due_at', due); }
+  const nextDepartmentId = body.department_id === undefined ? task.department_id : boundedString(body.department_id, 'department_id', 128);
+  const nextDepartmentName = body.department_name === undefined ? task.department_name : boundedString(body.department_name, 'department_name', 200);
+  if (body.department_id !== undefined || body.department_name !== undefined) { if (!['developer', 'supervisor', 'manager'].includes(req.user.role)) fail(403, 'Недостаточно прав для смены точки задачи', 'FORBIDDEN'); validateTaskDepartment(req.user, nextDepartmentId); if (body.department_id !== undefined) add('department_id', nextDepartmentId); if (body.department_name !== undefined) add('department_name', nextDepartmentName); }
+  if (body.assignee_id !== undefined) { if (!['developer', 'supervisor', 'manager'].includes(req.user.role)) fail(403, 'Недостаточно прав для смены исполнителя', 'FORBIDDEN'); const assignee = body.assignee_id ? await getUserById(String(body.assignee_id)) : null; if (assignee) validateTaskAssignee(assignee, nextDepartmentId); add('assignee_id', assignee ? assignee.id : null); }
+  if (body.assignee_id === undefined && task.assignee_id && body.department_id !== undefined) { const currentAssignee = await getUserById(task.assignee_id); if (currentAssignee) validateTaskAssignee(currentAssignee, nextDepartmentId); }
+  if (!['employee'].includes(req.user.role) && body.department_id === undefined && !canAccessTask(task, req.user)) fail(403, 'Нет доступа к точке задачи', 'FORBIDDEN');
   if (!fields.length) fail(400, 'Нет изменений', 'VALIDATION_ERROR'); fields.push('updated_at = NOW()'); values.push(taskId);
   await pool.query(`UPDATE tasks SET ${fields.join(', ')} WHERE id = $${values.length}`, values); await taskEvent(taskId, req.user.id, 'task_updated', { fields: keys });
   const updated = await getTask(taskId); return res.json({ success: true, task: await taskDetail(updated, req.user) });
@@ -446,25 +544,25 @@ app.get('/api/attachments/:id', authMiddleware, asyncHandler(async (req, res) =>
   res.set('Content-Type', row.mime_type); res.set('Content-Length', String(row.size_bytes)); res.set('Content-Disposition', `inline; filename="${row.filename.replace(/["\\\r\n]/g, '_')}"`); return res.send(row.data);
 }));
 app.get('/api/task-stats', authMiddleware, asyncHandler(async (req, res) => {
-  let query = 'SELECT status, COUNT(*)::int AS count FROM tasks'; const params = []; if (req.user.role === 'manager') { query += ' WHERE department_id = $1'; params.push(req.user.department_id); } if (req.user.role === 'employee') { query += ' WHERE (assignee_id = $1 OR creator_id = $1)'; params.push(req.user.id); } query += ' GROUP BY status';
+  let query = 'SELECT status, COUNT(*)::int AS count FROM tasks'; const params = []; if (req.user.role === 'supervisor') { const scope = userScope(req.user); if (!scope.all) { query += ' WHERE department_id = ANY($1::text[])'; params.push(scope.ids); } } if (req.user.role === 'manager') { const scope = userScope(req.user); if (scope.all) query += ' WHERE department_id IS NOT NULL'; else { query += ' WHERE department_id = ANY($1::text[])'; params.push(scope.ids); } } if (req.user.role === 'employee') { query += ' WHERE assignee_id = $1'; params.push(req.user.id); } query += ' GROUP BY status';
   const stats = { total: 0, new: 0, in_progress: 0, review: 0, done: 0 }; (await pool.query(query, params)).rows.forEach((row) => { stats[row.status] = row.count; stats.total += row.count; }); return res.json({ success: true, stats });
 }));
 
-app.get('/api/departments', authMiddleware, requireRoles('developer', 'manager'), asyncHandler(async (req, res) => { const departments = await fetchDepartments(); return res.json({ success: true, departments: req.user.role === 'manager' ? departments.filter((item) => item.id === req.user.department_id) : departments }); }));
-app.get('/api/sales', authMiddleware, requireRoles('developer', 'manager'), asyncHandler(async (req, res) => res.json(await fetchSales(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query)))));
-app.get('/api/shifts', authMiddleware, requireRoles('developer', 'manager'), asyncHandler(async (req, res) => res.json(await fetchShifts(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query)))));
-app.get('/api/ranking', authMiddleware, requireRoles('developer', 'manager'), asyncHandler(async (req, res) => res.json(await fetchRanking(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query)))));
+app.get('/api/departments', authMiddleware, requireRoles('developer', 'supervisor', 'manager'), asyncHandler(async (req, res) => { const departments = await fetchDepartments(); const scope = userScope(req.user); return res.json({ success: true, departments: scope.all ? departments : departments.filter((item) => scope.ids.includes(item.id)) }); }));
+app.get('/api/sales', authMiddleware, requireRoles('developer', 'supervisor', 'manager'), asyncHandler(async (req, res) => res.json(await fetchSales(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query)))));
+app.get('/api/shifts', authMiddleware, requireRoles('developer', 'supervisor', 'manager'), asyncHandler(async (req, res) => res.json(await fetchShifts(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query)))));
+app.get('/api/ranking', authMiddleware, requireRoles('developer', 'supervisor', 'manager'), asyncHandler(async (req, res) => res.json(await fetchRanking(scopedDepartment(req, req.query.departmentId || 'ALL'), dateRange(req.query)))));
 app.get('/api/my-metrics', authMiddleware, requireRoles('employee'), asyncHandler(async (req, res) => res.json(await fetchMyMetrics(req.user, dateRange(req.query)))));
 
-const PUBLIC_ROOT = path.resolve(__dirname, 'public');
-const MIME_TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
+const PUBLIC_ROOT = path.resolve(__dirname, 'dist');
+const MIME_TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf' };
 function staticPath(urlPath) {
   let decoded; try { decoded = decodeURIComponent(urlPath); } catch (_) { return null; }
   if (decoded.includes('\0')) return null; const result = path.resolve(PUBLIC_ROOT, `.${decoded === '/' ? '/index.html' : decoded}`); if (result !== PUBLIC_ROOT && !result.startsWith(`${PUBLIC_ROOT}${path.sep}`)) return null; return result;
 }
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api/')) return next(); const requested = staticPath(req.path); if (!requested) return sendError(res, 403, 'Недопустимый путь', 'INVALID_PATH');
-  fs.stat(requested, (error, stats) => { const actual = !error && stats.isFile() ? requested : path.join(PUBLIC_ROOT, 'index.html'); fs.readFile(actual, (readError, content) => { if (readError) return next(readError); res.type(MIME_TYPES[path.extname(actual).toLowerCase()] || 'application/octet-stream'); return res.send(content); }); });
+  fs.stat(requested, (error, stats) => { const actual = !error && stats.isFile() ? requested : path.join(PUBLIC_ROOT, 'index.html'); fs.readFile(actual, (readError, content) => { if (readError) return next(readError); res.type(MIME_TYPES[path.extname(actual).toLowerCase()] || 'application/octet-stream'); res.set('Cache-Control', actual.includes(`${path.sep}assets${path.sep}`) ? 'public, max-age=31536000, immutable' : 'no-cache'); return res.send(content); }); });
 });
 app.use((req, res) => sendError(res, 404, 'Ресурс не найден', 'NOT_FOUND'));
 app.use((error, req, res, next) => { if (res.headersSent) return next(error); const status = error instanceof AppError ? error.status : error.code === 'LIMIT_FILE_SIZE' ? 413 : 500; const message = error instanceof AppError ? error.message : status === 413 ? 'Файл слишком большой' : 'Внутренняя ошибка сервера'; console.error('[BURЖУЙ] request error', req.method, req.path, error.code || error.name || 'Error', error.message || 'unknown'); return sendError(res, status, message, error instanceof AppError ? error.code : 'INTERNAL_ERROR'); });
