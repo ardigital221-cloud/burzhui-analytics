@@ -116,10 +116,6 @@ type User = {
   username: string;
   full_name: string;
   role: Role;
-  department_id: string | null;
-  department_name: string | null;
-  department_ids?: string[];
-  all_departments?: boolean;
   iiko_employee_name: string | null;
   iiko_employee_code: string | null;
   telegram_username: string | null;
@@ -328,6 +324,13 @@ function formatDate(value?: string | null, withTime = false) {
       : { day: "2-digit", month: "short" },
   ).format(date);
 }
+function datetimeLocalValue(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 function initials(name?: string | null) {
   return (name || "Б")
     .split(" ")
@@ -379,35 +382,6 @@ function isNetworkRole(role: Role) {
 
 function canDeleteTask(role: Role) {
   return role === "developer" || role === "supervisor" || role === "manager";
-}
-
-function userDepartmentIds(user: Pick<User, "department_id" | "department_ids">) {
-  const ids = Array.isArray(user.department_ids)
-    ? user.department_ids.filter(Boolean)
-    : [];
-  return ids.length || !user.department_id ? ids : [user.department_id];
-}
-
-function hasDepartment(user: User, departmentId?: string | null) {
-  return Boolean(user.all_departments) || Boolean(departmentId && userDepartmentIds(user).includes(departmentId));
-}
-
-function departmentsForUser(user: User, departments: Department[]) {
-  if (isNetworkRole(user.role) || user.all_departments) return departments;
-  const ids = userDepartmentIds(user);
-  return departments.filter((department) => ids.includes(department.id));
-}
-
-function departmentLabel(user: User, departments: Department[]) {
-  if (user.all_departments || isNetworkRole(user.role)) return "Вся сеть";
-  const scoped = departmentsForUser(user, departments);
-  if (scoped.length) return scoped.map((item) => item.name).join(", ");
-  return user.department_name || "Точки не назначены";
-}
-
-function departmentParamForUser(user: User) {
-  if (isNetworkRole(user.role) || user.all_departments || userDepartmentIds(user).length > 1) return "ALL";
-  return userDepartmentIds(user)[0] || "";
 }
 
 function normalizeMyMetrics(raw: Record<string, unknown>): SalesData {
@@ -1031,14 +1005,14 @@ function MobileBottomNav({
           key={id}
           type="button"
           className={cn(
-            "flex min-h-14 flex-col items-center justify-center gap-1 text-[10px] font-bold text-muted-foreground focus-ring",
+            "flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 overflow-hidden px-1 text-[10px] font-bold text-muted-foreground focus-ring",
             view === id && "text-primary",
           )}
           onClick={() => onNavigate(id)}
           aria-current={view === id ? "page" : undefined}
         >
           <Icon className="size-5" />
-          <span>{label}</span>
+          <span className="max-w-full truncate text-center">{label}</span>
         </button>
       ))}
     </nav>
@@ -1118,7 +1092,7 @@ function roleName(role: Role) {
       ? "Управляющий"
     : role === "manager"
       ? "Менеджер"
-      : "Сотрудник";
+      : "Личный кабинет";
 }
 function PageIntro({
   eyebrow,
@@ -1176,7 +1150,7 @@ function OverviewView({
         : user.role === "manager"
           ? Promise.resolve(null)
         : api<Record<string, unknown>>(
-            `/api/sales?departmentId=${encodeURIComponent(departmentParamForUser(user))}&from=${daysAgo(6)}&to=${today()}`,
+            `/api/sales?departmentId=ALL&from=${daysAgo(6)}&to=${today()}`,
           ).then(normalizeSales);
     Promise.allSettled([
       api<{ tasks: Task[] }>("/api/tasks"),
@@ -1747,14 +1721,7 @@ function TasksView({
         else setTasks(tasksResult.value.tasks || []);
         if (usersResult.status === "fulfilled")
           setUsers(usersResult.value.users || []);
-        setDepartments(
-          departmentsForUser(
-            user,
-            departmentsResult.status === "fulfilled"
-              ? departmentsResult.value.departments || []
-              : [],
-          ),
-        );
+        setDepartments(departmentsResult.status === "fulfilled" ? departmentsResult.value.departments || [] : []);
       })
       .finally(() => setLoading(false));
   };
@@ -2146,7 +2113,7 @@ function TaskDialog({
       description: String(form.get("description") || ""),
       status: String(form.get("status") || "new"),
       priority: String(form.get("priority") || "normal"),
-      due_at: String(form.get("due_at") || "") || null,
+      due_at: form.get("due_at") ? new Date(String(form.get("due_at"))).toISOString() : null,
       assignee_id: String(form.get("assignee_id") || "") || null,
       department_id: String(form.get("department_id") || "") || null,
       department_name:
@@ -2493,26 +2460,23 @@ function TaskForm({
   onCancel: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
-  const [selectedTaskDepartmentId, setSelectedTaskDepartmentId] = useState(
-    task?.department_id ||
-      (departmentsForUser(user, departments).length === 1
-        ? departmentsForUser(user, departments)[0].id
-        : ""),
-  );
-  const availableUsers = users.filter(
-    (item) =>
-      item.active !== false &&
-      item.role !== "developer" &&
-      (user.role !== "manager" ||
-        item.all_departments ||
-        userDepartmentIds(item).some((id) => hasDepartment(user, id))),
-  );
-  const availableDepartments = departmentsForUser(user, departments);
-  const departmentUsers = availableUsers.filter(
-    (item) => !selectedTaskDepartmentId || hasDepartment(item, selectedTaskDepartmentId),
-  );
+  const [assignees, setAssignees] = useState<User[]>([]);
+  const [assigneeError, setAssigneeError] = useState(false);
+  useEffect(() => {
+    api<User[] | { users?: User[]; assignees?: User[] }>("/api/assignees")
+      .then((result) => setAssignees(Array.isArray(result) ? result : result.assignees || result.users || []))
+      .catch(() => { setAssignees([]); setAssigneeError(true); });
+  }, []);
+  const [selectedTaskDepartmentId, setSelectedTaskDepartmentId] = useState(task?.department_id || "");
+  const availableUsers = assignees.filter((item) => item.role !== "developer" && item.active);
+  const availableDepartments = departments;
+  const departmentUsers = availableUsers;
   return (
     <form onSubmit={onSubmit} className="grid gap-5 p-5 sm:p-7">
+      {user.role !== "employee" && <Field label="Точка"><NativeSelect className="w-full"><select name="department_id" value={selectedTaskDepartmentId} onChange={(event) => setSelectedTaskDepartmentId(event.target.value)} required>
+        <NativeSelectOption value="">Выберите точку</NativeSelectOption>
+        {availableDepartments.map((item) => <NativeSelectOption key={item.id} value={item.id}>{item.name}</NativeSelectOption>)}
+      </select></NativeSelect></Field>}
       <Field label="Название">
         <Input
           name="title"
@@ -2559,7 +2523,7 @@ function TaskForm({
         </Field>
         <Field label="Ответственный">
           <NativeSelect className="w-full">
-            <select key={selectedTaskDepartmentId} name="assignee_id" defaultValue={departmentUsers.some((item) => item.id === task?.assignee_id) ? task?.assignee_id || "" : ""}>
+            <select name="assignee_id" defaultValue={task?.assignee_id || ""}>
               <NativeSelectOption value="">Без исполнителя</NativeSelectOption>
               {departmentUsers.map((item) => (
                 <NativeSelectOption key={item.id} value={item.id}>
@@ -2568,38 +2532,16 @@ function TaskForm({
               ))}
             </select>
           </NativeSelect>
+          {assigneeError && <p className="mt-2 text-xs text-destructive">Не удалось загрузить список исполнителей. Закройте форму и попробуйте снова.</p>}
         </Field>
         <Field label="Срок">
           <Input
             name="due_at"
             type="datetime-local"
-            defaultValue={
-              task?.due_at
-                ? new Date(task.due_at).toISOString().slice(0, 16)
-                : ""
-            }
+            defaultValue={datetimeLocalValue(task?.due_at)}
             className="h-11 bg-white"
           />
         </Field>
-        {user.role !== "employee" && (
-          <Field label="Точка">
-            <NativeSelect className="w-full">
-              <select
-                name="department_id"
-                value={selectedTaskDepartmentId}
-                onChange={(event) => setSelectedTaskDepartmentId(event.target.value)}
-                required
-              >
-                <NativeSelectOption value="">Выберите точку</NativeSelectOption>
-                {availableDepartments.map((item) => (
-                  <NativeSelectOption key={item.id} value={item.id}>
-                    {item.name}
-                  </NativeSelectOption>
-                ))}
-              </select>
-            </NativeSelect>
-          </Field>
-        )}
       </div>
       <DialogFooter className="mt-1 p-0">
         <Button type="button" variant="outline" onClick={onCancel}>
@@ -2652,17 +2594,10 @@ function TeamView({
   onNotice: (message: string) => void;
 }) {
   const [users, setUsers] = useState<User[]>([]);
-  const [departments, setDepartments] = useState<Department[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<User | null>(null);
-  const scopeLabel = (member: User) =>
-    member.all_departments
-      ? "Все точки"
-      : userDepartmentIds(member)
-          .map((id) => departments.find((item) => item.id === id)?.name || id)
-          .join(", ") || member.department_name || "Точки не назначены";
   const editMember = (member: User) => {
     setEditing(member);
     setOpen(true);
@@ -2670,23 +2605,11 @@ function TeamView({
   const load = () => {
     setLoading(true);
     setError("");
-    Promise.allSettled([
-      api<{ users: User[] }>("/api/users"),
-      api<{ departments: Department[] }>("/api/departments"),
-    ])
-      .then(([usersResult, departmentsResult]) => {
-        if (usersResult.status === "rejected")
-          setError(errorText(usersResult.reason));
-        else setUsers(usersResult.value.users || []);
-        setDepartments(
-          departmentsForUser(
-            user,
-            departmentsResult.status === "fulfilled"
-              ? departmentsResult.value.departments || []
-              : [],
-          ),
-        );
+    api<{ users: User[] }>("/api/users")
+      .then((usersResult) => {
+        setUsers(usersResult.users || []);
       })
+      .catch((e) => setError(errorText(e)))
       .finally(() => setLoading(false));
   };
   useEffect(load, [refreshKey]);
@@ -2695,7 +2618,7 @@ function TeamView({
       <PageIntro
         eyebrow="Люди и роли"
         title="Команда"
-        description="Доступы команды и привязка к точкам iiko в одном месте."
+        description="Учётные записи команды. Точку выбирают при постановке каждой задачи."
         action={
           <Button
             className="gap-2"
@@ -2745,8 +2668,8 @@ function TeamView({
                   )}
                 </div>
                 <div className="rounded-xl bg-muted/50 p-3 text-xs leading-5">
-                  <div className="font-semibold text-muted-foreground">Доступ к точкам</div>
-                  <div className="line-clamp-2 font-semibold">{scopeLabel(member)}</div>
+                  <div className="font-semibold text-muted-foreground">Учётная запись</div>
+                  <div className="font-semibold">{member.role === "employee" ? "Доступ к своим задачам" : roleName(member.role)}</div>
                   {member.iiko_employee_code && (
                     <div className="mt-1 text-muted-foreground">iiko: {member.iiko_employee_code}</div>
                   )}
@@ -2769,7 +2692,7 @@ function TeamView({
               <TableHeader>
                 <TableRow>
                   <TableHead>Сотрудник</TableHead>
-                  <TableHead>Точка</TableHead>
+                  <TableHead>Доступ</TableHead>
                   <TableHead>Telegram</TableHead>
                   <TableHead>iiko-код</TableHead>
                   <TableHead>Статус</TableHead>
@@ -2796,10 +2719,15 @@ function TeamView({
                         </div>
                       </div>
                     </TableCell>
-                    <TableCell className="whitespace-nowrap">
-                      <span className="block max-w-[220px] truncate" title={scopeLabel(member)}>
-                        {scopeLabel(member)}
-                      </span>
+                    <TableCell>
+                      {member.role === "employee" ? <span className="text-sm text-muted-foreground">Личный кабинет</span> :
+                      <Badge
+                        variant={
+                          member.role === "developer" ? "default" : "outline"
+                        }
+                      >
+                        {roleName(member.role)}
+                      </Badge>}
                     </TableCell>
                     <TableCell>
                       {member.telegram_username ? (
@@ -2856,7 +2784,6 @@ function TeamView({
         onOpenChange={setOpen}
         user={editing}
         currentUser={user}
-        departments={departments}
         onSaved={() => {
           setOpen(false);
           onNotice("Профиль сотрудника сохранён");
@@ -2872,66 +2799,43 @@ function UserDialog({
   onOpenChange,
   user,
   currentUser,
-  departments,
   onSaved,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   user: User | null;
   currentUser: User;
-  departments: Department[];
   onSaved: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [role, setRole] = useState<Role>(user?.role || "employee");
-  const [selectedDepartmentIds, setSelectedDepartmentIds] = useState<string[]>(
-    userDepartmentIds(user || currentUser),
-  );
-  const [allDepartments, setAllDepartments] = useState(
-    Boolean(user?.all_departments),
-  );
+  const [privilegedRole, setPrivilegedRole] = useState<Role>(user?.role === "manager" || user?.role === "supervisor" ? user.role : "supervisor");
+  const [elevatedAccess, setElevatedAccess] = useState(user?.role === "manager" || user?.role === "supervisor");
 
   useEffect(() => {
     if (!open) return;
-    setRole(user?.role || "employee");
-    setSelectedDepartmentIds(userDepartmentIds(user || currentUser));
-    setAllDepartments(Boolean(user?.all_departments));
+    setPrivilegedRole(user?.role === "manager" || user?.role === "supervisor" ? user.role : "supervisor");
+    setElevatedAccess(user?.role === "manager" || user?.role === "supervisor");
     setError("");
   }, [open, user, currentUser]);
-
-  const availableDepartments = departmentsForUser(currentUser, departments);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setBusy(true);
     setError("");
     const form = new FormData(event.currentTarget);
-    const effectiveAllDepartments =
-      isNetworkRole(role) ||
-      (allDepartments && (currentUser.role === "developer" || Boolean(currentUser.all_departments)));
-    const effectiveDepartmentIds =
-      allDepartments && currentUser.role === "manager" && !currentUser.all_departments
-        ? availableDepartments.map((item) => item.id)
-        : selectedDepartmentIds;
-    const payload: Record<string, unknown> = {
+    const role: Role = user?.role === "developer" ? "developer" : currentUser.role === "developer" && elevatedAccess ? privilegedRole : "employee";
+    const payload = {
       full_name: String(form.get("full_name") || ""),
       username: String(form.get("username") || ""),
       password: String(form.get("password") || "") || undefined,
+      role,
       telegram_username: String(form.get("telegram_username") || "").trim(),
-      department_ids: effectiveAllDepartments ? [] : effectiveDepartmentIds,
-      all_departments: effectiveAllDepartments,
-      department_id: effectiveAllDepartments ? null : effectiveDepartmentIds[0] || null,
-      department_name: effectiveAllDepartments
-        ? null
-        : departments.find((item) => item.id === effectiveDepartmentIds[0])
-            ?.name || null,
       iiko_employee_name: String(form.get("iiko_employee_name") || "") || null,
       iiko_employee_code: String(form.get("iiko_employee_code") || "") || null,
       active: form.get("active") === "on",
     };
-    // Roles are not assigned by hand: a new person is a task executor until an admin changes it.
-    if (!user) payload.role = "employee";
+    if (user && currentUser.role !== "developer") delete (payload as Partial<typeof payload>).role;
     try {
       await api(user ? `/api/users/${user.id}` : "/api/users", {
         method: user ? "PATCH" : "POST",
@@ -2953,7 +2857,7 @@ function UserDialog({
             {user ? "Профиль сотрудника" : "Новый сотрудник"}
           </DialogTitle>
           <DialogDescription>
-            Имя, точка и Telegram — чтобы назначать задачи по имени.
+            {user ? "Данные аккаунта, Telegram и связь с iiko." : "Аккаунт без привязки к точке. Точка выбирается при создании задачи."}
           </DialogDescription>
         </DialogHeader>
         {error && (
@@ -2997,6 +2901,10 @@ function UserDialog({
                 autoComplete="off"
               />
             </Field>
+            {currentUser.role === "developer" && user?.role !== "developer" && <div className="grid gap-3 sm:col-span-2">
+              <label className="flex min-h-11 items-center gap-3 rounded-xl border px-3 text-sm font-semibold"><input type="checkbox" checked={elevatedAccess} onChange={(event) => setElevatedAccess(event.target.checked)} className="size-4 accent-[#7b1e2b]" />Назначить управленческий доступ</label>
+              {elevatedAccess && <Field label="Уровень доступа"><NativeSelect className="w-full"><select value={privilegedRole} onChange={(event) => setPrivilegedRole(event.target.value as Role)}><NativeSelectOption value="supervisor">Управляющий</NativeSelectOption><NativeSelectOption value="manager">Менеджер</NativeSelectOption></select></NativeSelect></Field>}
+            </div>}
             <Field label="Имя в iiko">
               <Input
                 name="iiko_employee_name"
@@ -3011,53 +2919,6 @@ function UserDialog({
                 className="bg-white"
               />
             </Field>
-          </div>
-          <div className="grid gap-3 rounded-xl border bg-muted/30 p-4">
-            <div>
-              <div className="text-sm font-semibold">Доступ к точкам</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                Выберите одну или несколько точек. UUID вводить не нужно.
-              </div>
-            </div>
-            <label className="flex items-center gap-3 text-sm font-semibold">
-              <input
-                type="checkbox"
-                checked={isNetworkRole(role) || allDepartments}
-                onChange={(event) => setAllDepartments(event.target.checked)}
-                disabled={isNetworkRole(role)}
-                className="size-4 accent-[#7b1e2b]"
-              />
-              Все доступные точки
-            </label>
-            {!isNetworkRole(role) && !allDepartments && (
-              <div className="grid max-h-48 gap-2 overflow-y-auto sm:grid-cols-2">
-                {availableDepartments.map((department) => (
-                  <label
-                    key={department.id}
-                    className="flex items-center gap-3 rounded-lg border bg-white px-3 py-2 text-sm"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedDepartmentIds.includes(department.id)}
-                      onChange={(event) =>
-                        setSelectedDepartmentIds((current) =>
-                          event.target.checked
-                            ? [...new Set([...current, department.id])]
-                            : current.filter((id) => id !== department.id),
-                        )
-                      }
-                      className="size-4 accent-[#7b1e2b]"
-                    />
-                    <span className="truncate">{department.name}</span>
-                  </label>
-                ))}
-                {!availableDepartments.length && (
-                  <p className="text-sm text-muted-foreground">
-                    Нет доступных точек для назначения.
-                  </p>
-                )}
-              </div>
-            )}
           </div>
           <label className="flex items-center gap-3 rounded-xl border p-3 text-sm font-semibold">
             <input
@@ -3111,7 +2972,7 @@ function AnalyticsView({
   useEffect(() => {
     api<{ departments: Department[] }>("/api/departments")
       .then((result) => {
-        const scoped = departmentsForUser(user, result.departments || []);
+        const scoped = result.departments || [];
         setDepartments(scoped);
         setDepartmentId((current) => {
           if (isNetworkRole(user.role)) return "ALL";
@@ -3122,7 +2983,7 @@ function AnalyticsView({
         });
       })
       .catch((e) => setError(errorText(e)));
-  }, [refreshKey, user.role, user.department_id, user.department_ids, user.all_departments]);
+  }, [refreshKey, user.role]);
   const apply = () => {
     if (!from || !to || from > to) {
       setError("Проверьте период: дата начала не может быть позже даты окончания.");
@@ -3837,11 +3698,6 @@ function ProfileView({
               </div>
             </div>
             <div className="mt-7 grid gap-3 text-sm">
-              <InfoTile label="Точка">
-                <span className="font-semibold">
-                  {user.department_name || "Вся сеть"}
-                </span>
-              </InfoTile>
               <InfoTile label="Синхронизация iiko">
                 <span className="font-semibold">
                   {user.iiko_employee_code || "Не привязано"}
