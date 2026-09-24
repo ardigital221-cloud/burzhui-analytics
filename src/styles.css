@@ -123,6 +123,18 @@ a { color: inherit; text-decoration: none; }
 .touch-target { min-width: 44px; min-height: 44px; }
 .focus-ring:focus-visible { outline: 3px solid color-mix(in srgb, var(--ring) 45%, transparent); outline-offset: 3px; }
 
+/* Keep dense operational screens legible on compact devices. */
+.app-content, .surface, [role="dialog"] { min-width: 0; }
+input, textarea, select { max-width: 100%; }
+.overflow-x-auto table { min-width: 640px; }
+[role="dialog"] { max-width: calc(100vw - 1rem); }
+@media (max-width: 639px) {
+  [role="dialog"] { border-radius: 1rem; }
+  [role="dialog"] form { gap: 1rem; }
+  [role="dialog"] footer { flex-wrap: wrap; }
+  [role="dialog"] footer button { flex: 1 1 auto; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
 }
