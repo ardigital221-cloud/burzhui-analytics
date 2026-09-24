@@ -321,7 +321,7 @@ async function syncDepartments(items) {
     const values = []; const params = [];
     items.forEach((item) => { if (!item.id || !item.name) return; params.push(item.id, item.name); values.push(`($${params.length - 1}, $${params.length})`); });
     if (!values.length) return;
-    await pool.query(`INSERT INTO departments (id, name, updated_at) VALUES ${values.join(', ')} ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()`, params);
+    await pool.query(`INSERT INTO departments (id, name) VALUES ${values.join(', ')} ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()`, params);
   } catch (error) { console.error('[BURЖУЙ] departments sync failed', error.message); }
 }
 async function knownDepartments() {
