@@ -1188,7 +1188,7 @@ function OverviewView({
         <PageIntro
           eyebrow="Сегодня в работе"
           title={`Обзор, ${user.full_name.split(" ")[0]}`}
-          description="Ваши задачи, сотрудники и результат команды в назначенных точках."
+          description="Ваши задачи, сотрудники и результат команды по всем точкам."
           action={
             <Button className="gap-2" onClick={() => onNavigate("tasks")}>
               <Plus className="size-4" /> Новая задача
