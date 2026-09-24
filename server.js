@@ -88,49 +88,13 @@ function normalizeUsername(value) {
   return username;
 }
 function normalizeRole(value) { if (!['developer', 'supervisor', 'manager', 'employee'].includes(value)) fail(400, 'Недопустимая роль', 'INVALID_ROLE'); return value; }
-function isNetworkRole(role) { return role === 'developer' || role === 'supervisor'; }
 function isUuid(value) { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
-function normalizeDepartmentIds(value, name = 'department_ids') {
-  if (!Array.isArray(value)) fail(400, `Поле ${name} должно быть массивом UUID`, 'VALIDATION_ERROR');
-  const ids = [...new Set(value.map((item) => {
-    if (typeof item !== 'string' || !isUuid(item.trim())) fail(400, `Поле ${name} содержит некорректный UUID`, 'VALIDATION_ERROR');
-    return item.trim();
-  }))];
-  if (ids.length > 45) fail(400, `Поле ${name} содержит слишком много точек`, 'VALIDATION_ERROR');
-  return ids;
-}
-function legacyDepartmentIds(row) {
-  if (Array.isArray(row && row.department_ids)) return row.department_ids.filter(Boolean);
-  return row && row.department_id ? [row.department_id] : [];
-}
-function userScope(row) {
-  return { all: row && row.role === 'developer' ? true : Boolean(row && row.all_departments), ids: legacyDepartmentIds(row) };
-}
-function scopeAllows(scope, departmentId) { return Boolean(scope.all || (departmentId && scope.ids.includes(departmentId))); }
-function scopeIsSubset(child, parent) { return Boolean(parent.all || (!child.all && !parent.all && child.ids.every((id) => parent.ids.includes(id)))); }
-function scopesOverlap(left, right) {
-  return Boolean(left.all || right.all || left.ids.some((id) => right.ids.includes(id)));
-}
-function scopeForRequest(body, current, role, actor) {
-  if (isNetworkRole(role)) return { all: true, ids: [] };
-  const hasIds = Object.prototype.hasOwnProperty.call(body || {}, 'department_ids');
-  const hasAll = Object.prototype.hasOwnProperty.call(body || {}, 'all_departments');
-  const hasLegacy = Object.prototype.hasOwnProperty.call(body || {}, 'department_id');
-  let ids = hasIds ? normalizeDepartmentIds(body.department_ids) : (hasLegacy ? (body.department_id ? normalizeDepartmentIds([boundedString(body.department_id, 'department_id', 128)]) : []) : legacyDepartmentIds(current));
-  let all = hasAll ? body.all_departments : (hasIds || hasLegacy ? false : (current ? Boolean(current.all_departments) : isNetworkRole(role)));
-  if (typeof all !== 'boolean') fail(400, 'Поле all_departments должно быть boolean', 'VALIDATION_ERROR');
-  if (!hasIds && hasLegacy && !hasAll) all = false;
-  if (isNetworkRole(role) && !hasIds && !hasLegacy && !hasAll) all = true;
-  if (all) ids = [];
-  if (!all && !ids.length) fail(400, 'Назначьте пользователю хотя бы одну точку или всю сеть', 'SCOPE_REQUIRED');
-  const scope = { all, ids };
-  if (actor && actor.role === 'manager' && !scopeIsSubset(scope, userScope(actor))) fail(403, 'Область сотрудника выходит за пределы ваших точек', 'FORBIDDEN');
-  return scope;
-}
-async function ensureIikoCodeAvailable(code, scope, excludeId = null) {
+function userScope(row) { return { all: Boolean(row && ['developer', 'supervisor', 'manager'].includes(row.role)), ids: [] }; }
+function scopeAllows(scope, departmentId) { return Boolean(scope.all && departmentId); }
+async function ensureIikoCodeAvailable(code, excludeId = null) {
   if (!code) return;
-  const rows = (await pool.query('SELECT id, role, department_ids, all_departments, department_id FROM users WHERE iiko_employee_code = $1 AND ($2::uuid IS NULL OR id <> $2)', [code, excludeId])).rows;
-  if (rows.some((row) => scopesOverlap(scope, userScope(row)))) fail(409, 'Этот табельный код iiko уже используется в пересекающейся области точек', 'IIKO_CODE_EXISTS');
+  const existing = await pool.query('SELECT 1 FROM users WHERE iiko_employee_code = $1 AND ($2::uuid IS NULL OR id <> $2) LIMIT 1', [code, excludeId]);
+  if (existing.rowCount) fail(409, 'Этот табельный код iiko уже используется', 'IIKO_CODE_EXISTS');
 }
 function normalizeStatus(value) { if (!['new', 'in_progress', 'review', 'done'].includes(value)) fail(400, 'Недопустимый статус задачи', 'INVALID_STATUS'); return value; }
 function normalizePriority(value) { if (!['low', 'normal', 'high', 'urgent'].includes(value)) fail(400, 'Недопустимый приоритет задачи', 'INVALID_PRIORITY'); return value; }
@@ -168,12 +132,11 @@ async function verifyPassword(password, encoded) {
   } catch (_) { return false; }
 }
 
-const USER_COLUMNS = `id, username, full_name, "role" AS role, department_id, department_name, department_ids, all_departments, iiko_employee_name, iiko_employee_code, telegram_username, telegram_chat_id, active, password_hash, created_at, updated_at`;
-const USER_COLUMNS_QUALIFIED = `u.id, u.username, u.full_name, u."role" AS role, u.department_id, u.department_name, u.department_ids, u.all_departments, u.iiko_employee_name, u.iiko_employee_code, u.telegram_username, u.telegram_chat_id, u.active, u.password_hash, u.created_at, u.updated_at`;
+const USER_COLUMNS = `id, username, full_name, "role" AS role, created_by, iiko_employee_name, iiko_employee_code, telegram_username, telegram_chat_id, active, password_hash, created_at, updated_at`;
+const USER_COLUMNS_QUALIFIED = `u.id, u.username, u.full_name, u."role" AS role, u.created_by, u.iiko_employee_name, u.iiko_employee_code, u.telegram_username, u.telegram_chat_id, u.active, u.password_hash, u.created_at, u.updated_at`;
 function userView(row) {
   if (!row) return row;
-  const scope = userScope(row);
-  return { id: row.id, username: row.username, full_name: row.full_name, role: row.role, department_id: row.department_id, department_name: row.department_name, department_ids: scope.ids, all_departments: scope.all, iiko_employee_name: row.iiko_employee_name, iiko_employee_code: row.iiko_employee_code, telegram_username: row.telegram_username, telegram_linked: Boolean(row.telegram_chat_id), active: row.active, created_at: row.created_at, updated_at: row.updated_at };
+  return { id: row.id, username: row.username, full_name: row.full_name, role: row.role, created_by: row.created_by, iiko_employee_name: row.iiko_employee_name, iiko_employee_code: row.iiko_employee_code, telegram_username: row.telegram_username, telegram_linked: Boolean(row.telegram_chat_id), active: row.active, created_at: row.created_at, updated_at: row.updated_at };
 }
 async function getUserById(id) { return (await pool.query(`SELECT ${USER_COLUMNS} FROM users WHERE id = $1`, [id])).rows[0] || null; }
 async function createSession(userId) {
@@ -209,6 +172,7 @@ CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY, username VARCHAR(64) NOT 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS department_ids TEXT[];
 ALTER TABLE users ADD COLUMN IF NOT EXISTS all_departments BOOLEAN;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS iiko_employee_code VARCHAR(100);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id);
 DO $$ DECLARE item RECORD; BEGIN
   FOR item IN SELECT conname FROM pg_constraint WHERE conrelid = 'users'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) ILIKE '%role%'
   LOOP EXECUTE format('ALTER TABLE users DROP CONSTRAINT IF EXISTS %I', item.conname); END LOOP;
@@ -224,6 +188,7 @@ ALTER TABLE users ALTER COLUMN all_departments SET DEFAULT FALSE;
 ALTER TABLE users ALTER COLUMN all_departments SET NOT NULL;
 DROP INDEX IF EXISTS users_department_iiko_code_unique;
 CREATE INDEX IF NOT EXISTS users_iiko_employee_code_idx ON users(iiko_employee_code) WHERE iiko_employee_code IS NOT NULL;
+CREATE INDEX IF NOT EXISTS users_created_by_idx ON users(created_by) WHERE created_by IS NOT NULL;
 CREATE TABLE IF NOT EXISTS sessions (token_hash CHAR(64) PRIMARY KEY, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
 CREATE INDEX IF NOT EXISTS sessions_expires_idx ON sessions(expires_at);
 CREATE TABLE IF NOT EXISTS tasks (id BIGSERIAL PRIMARY KEY, title VARCHAR(200) NOT NULL, description TEXT, status VARCHAR(20) NOT NULL DEFAULT 'new' CHECK (status IN ('new','in_progress','review','done')), priority VARCHAR(20) NOT NULL DEFAULT 'normal' CHECK (priority IN ('low','normal','high','urgent')), department_id VARCHAR(128), department_name VARCHAR(200), creator_id UUID NOT NULL REFERENCES users(id), assignee_id UUID REFERENCES users(id), due_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
@@ -267,8 +232,7 @@ async function getTask(id) {
 }
 function canAccessTask(task, user) {
   if (!task) return false;
-  if (user.role === 'developer') return true;
-  if (user.role === 'supervisor' || user.role === 'manager') return scopeAllows(userScope(user), task.department_id);
+  if (['developer', 'supervisor', 'manager'].includes(user.role)) return true;
   return user.role === 'employee' && task.assignee_id === user.id;
 }
 async function taskDetail(task, user) {
@@ -284,8 +248,6 @@ async function taskEvent(taskId, userId, type, payload = {}) {
 }
 async function listTasks(user) {
   let query = 'SELECT t.*, cu.full_name AS creator_name, au.full_name AS assignee_name FROM tasks t JOIN users cu ON cu.id = t.creator_id LEFT JOIN users au ON au.id = t.assignee_id'; const params = [];
-  if (user.role === 'supervisor') { const scope = userScope(user); if (!scope.all) { query += ' WHERE t.department_id = ANY($1::text[])'; params.push(scope.ids); } }
-  if (user.role === 'manager') { const scope = userScope(user); if (scope.all) query += ' WHERE t.department_id IS NOT NULL'; else { query += ' WHERE t.department_id = ANY($1::text[])'; params.push(scope.ids); } }
   if (user.role === 'employee') { query += ' WHERE t.assignee_id = $1'; params.push(user.id); }
   query += ' ORDER BY t.updated_at DESC, t.id DESC'; return (await pool.query(query, params)).rows;
 }
@@ -296,7 +258,6 @@ function validateTaskDepartment(user, departmentId) {
 function validateTaskAssignee(assignee, departmentId) {
   if (!assignee || !assignee.active) fail(400, 'Исполнитель не найден или деактивирован', 'INVALID_ASSIGNEE');
   if (assignee.role === 'developer') fail(400, 'Задачу нельзя назначить разработчику', 'INVALID_ASSIGNEE');
-  if (!scopeAllows(userScope(assignee), departmentId) && assignee.role !== 'supervisor') fail(400, 'Исполнитель не привязан к выбранной точке', 'INVALID_ASSIGNEE');
 }
 
 function validImage(file) {
@@ -434,8 +395,8 @@ async function fetchRanking(departmentId, dates) {
   return { success: true, ranking: rows.sort((a, b) => (b.DishDiscountSumInt || 0) - (a.DishDiscountSumInt || 0)) };
 }
 async function fetchMyMetrics(user, dates) {
-  if ((!userScope(user).all && !userScope(user).ids.length) || !user.iiko_employee_code) fail(400, 'Для пользователя не заданы точки и табельный код iiko', 'PROFILE_INCOMPLETE');
-  const filters = salesFilters(dates, userScope(user).all ? null : userScope(user).ids, null, user.iiko_employee_code);
+  if (!user.iiko_employee_code) fail(400, 'Для пользователя не задан табельный код iiko', 'PROFILE_INCOMPLETE');
+  const filters = salesFilters(dates, null, null, user.iiko_employee_code);
   const [summary, upsell] = await Promise.all([
     olap({ reportType: 'SALES', buildSummary: false, groupByRowFields: ['Cashier', 'Cashier.Code'], aggregateFields: ['DishDiscountSumInt', 'UniqOrderId', 'DishDiscountSumInt.average'], filters }),
     olap({ reportType: 'SALES', buildSummary: false, groupByRowFields: ['DishGroup.TopParent', 'DishType'], aggregateFields: ['DishAmountInt'], filters })
@@ -468,24 +429,26 @@ app.patch('/api/auth/password', authMiddleware, asyncHandler(async (req, res) =>
 }));
 
 app.get('/api/users', authMiddleware, requireRoles('developer', 'supervisor', 'manager'), asyncHandler(async (req, res) => {
-  const rows = (await pool.query(`SELECT ${USER_COLUMNS} FROM users${req.user.role === 'developer' ? '' : ' WHERE "role" = \'employee\''} ORDER BY full_name`)).rows;
-  const users = req.user.role === 'developer' ? rows : rows.filter((row) => req.user.role === 'supervisor' ? scopesOverlap(userScope(req.user), userScope(row)) : scopeIsSubset(userScope(row), userScope(req.user)));
-  return res.json({ success: true, users: users.map(userView) });
+  if (req.user.role === 'developer') return res.json({ success: true, users: (await pool.query(`SELECT ${USER_COLUMNS} FROM users ORDER BY full_name`)).rows.map(userView) });
+  if (req.user.role === 'supervisor') return res.json({ success: true, users: [] });
+  const rows = (await pool.query(`SELECT ${USER_COLUMNS} FROM users WHERE "role" = 'employee' AND created_by = $1 ORDER BY full_name`, [req.user.id])).rows;
+  return res.json({ success: true, users: rows.map(userView) });
+}));
+app.get('/api/assignees', authMiddleware, requireRoles('developer', 'supervisor', 'manager'), asyncHandler(async (req, res) => {
+  const rows = (await pool.query(`SELECT id, full_name, "role" AS role, active FROM users WHERE "role" <> 'developer' AND active = TRUE ORDER BY full_name`)).rows;
+  return res.json({ success: true, assignees: rows });
 }));
 app.post('/api/users', authMiddleware, requireRoles('developer', 'manager'), asyncHandler(async (req, res) => {
-  const body = req.body || {}; const role = normalizeRole(body.role); const username = normalizeUsername(body.username); const name = boundedString(body.full_name, 'full_name', 200, true);
-  const departmentName = boundedString(body.department_name, 'department_name', 200); const iikoName = boundedString(body.iiko_employee_name, 'iiko_employee_name', 200); const iikoCode = boundedString(body.iiko_employee_code, 'iiko_employee_code', 100);
+  const body = req.body || {}; const role = normalizeRole(body.role || 'employee'); const username = normalizeUsername(body.username); const name = boundedString(body.full_name, 'full_name', 200, true);
+  const iikoName = boundedString(body.iiko_employee_name, 'iiko_employee_name', 200); const iikoCode = boundedString(body.iiko_employee_code, 'iiko_employee_code', 100);
   const telegramUsername = String(body.telegram_username || '').trim().replace(/^@/, '').toLowerCase() || null;
   if (telegramUsername && !/^[a-z0-9_]{4,32}$/.test(telegramUsername)) fail(400, 'Telegram-ник должен содержать 4–32 символа: латиница, цифры и «_»', 'INVALID_TELEGRAM');
   const active = body.active === undefined ? true : body.active; if (typeof active !== 'boolean') fail(400, 'Поле active должно быть boolean', 'VALIDATION_ERROR');
   validatePassword(body.password);
   if (req.user.role === 'manager' && role !== 'employee') fail(403, 'Менеджер может создавать только сотрудников', 'FORBIDDEN');
-  const scope = scopeForRequest(body, null, role, req.user.role === 'manager' ? req.user : null);
-  await ensureIikoCodeAvailable(iikoCode, scope);
-  const departmentId = scope.all ? null : scope.ids[0];
-  await syncDepartments([{ id: departmentId, name: departmentName }]);
+  await ensureIikoCodeAvailable(iikoCode);
   try {
-    const result = await pool.query(`INSERT INTO users (id, username, full_name, "role", department_id, department_name, department_ids, all_departments, iiko_employee_name, iiko_employee_code, telegram_username, active, password_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING ${USER_COLUMNS}`, [crypto.randomUUID(), username, name, role, departmentId, departmentName, scope.ids, scope.all, iikoName, iikoCode, telegramUsername, active, await hashPassword(body.password)]);
+    const result = await pool.query(`INSERT INTO users (id, username, full_name, "role", created_by, department_id, department_name, department_ids, all_departments, iiko_employee_name, iiko_employee_code, telegram_username, active, password_hash) VALUES ($1,$2,$3,$4,$5,NULL,NULL,'{}'::text[],$6,$7,$8,$9,$10,$11) RETURNING ${USER_COLUMNS}`, [crypto.randomUUID(), username, name, role, req.user.id, role !== 'employee', iikoName, iikoCode, telegramUsername, active, await hashPassword(body.password)]);
     return res.status(201).json({ success: true, user: userView(result.rows[0]) });
   } catch (error) {
     if (error.code === '23505') fail(409, 'Пользователь с таким логином уже существует', 'USERNAME_EXISTS');
@@ -494,24 +457,16 @@ app.post('/api/users', authMiddleware, requireRoles('developer', 'manager'), asy
 }));
 app.patch('/api/users/:id', authMiddleware, asyncHandler(async (req, res) => {
   const body = req.body || {}; const target = await getUserById(req.params.id); if (!target) fail(404, 'Пользователь не найден', 'NOT_FOUND');
-  const self = target.id === req.user.id; const targetScope = userScope(target);
+  const self = target.id === req.user.id;
   if (req.user.role === 'supervisor') fail(403, 'Управляющий не может изменять сотрудников', 'FORBIDDEN');
-  if (req.user.role === 'manager' && (target.role !== 'employee' || !scopeIsSubset(targetScope, userScope(req.user)))) fail(403, 'Нет доступа к этому сотруднику', 'FORBIDDEN');
+  if (req.user.role === 'manager' && (target.role !== 'employee' || target.created_by !== req.user.id)) fail(403, 'Нет доступа к этому сотруднику', 'FORBIDDEN');
   if (req.user.role === 'employee' && (!self || Object.keys(body).some((key) => !['current_password', 'password'].includes(key)))) fail(403, 'Сотрудник может менять только свой пароль', 'FORBIDDEN');
   const nextRole = body.role === undefined ? target.role : normalizeRole(body.role);
   if (req.user.role !== 'developer' && body.role !== undefined) fail(403, 'Только developer может менять роли', 'FORBIDDEN');
   if (req.user.role === 'manager' && nextRole !== 'employee') fail(403, 'Менеджер может изменять только сотрудников', 'FORBIDDEN');
-  const hasScopeFields = ['department_ids', 'all_departments', 'department_id'].some((key) => Object.prototype.hasOwnProperty.call(body, key));
-  let scope = targetScope;
-  if (req.user.role !== 'employee' && (hasScopeFields || body.role !== undefined)) {
-    if (body.role !== undefined && isNetworkRole(nextRole) && !hasScopeFields) scope = { all: true, ids: [] };
-    else if (body.role !== undefined && !isNetworkRole(nextRole) && isNetworkRole(target.role) && !hasScopeFields) fail(400, 'Для этой роли назначьте точки', 'SCOPE_REQUIRED');
-    else scope = scopeForRequest(body, target, nextRole, req.user.role === 'manager' ? req.user : null);
-  }
   const fields = []; const values = []; const add = (column, value) => { fields.push(`${column} = $${values.length + 1}`); values.push(value); };
   if (body.username !== undefined) add('username', normalizeUsername(body.username));
   if (body.full_name !== undefined) add('full_name', boundedString(body.full_name, 'full_name', 200, true));
-  if (body.department_name !== undefined) add('department_name', boundedString(body.department_name, 'department_name', 200));
   if (body.iiko_employee_name !== undefined) add('iiko_employee_name', boundedString(body.iiko_employee_name, 'iiko_employee_name', 200));
   if (body.iiko_employee_code !== undefined) add('iiko_employee_code', boundedString(body.iiko_employee_code, 'iiko_employee_code', 100));
   if (body.telegram_username !== undefined) {
@@ -521,10 +476,9 @@ app.patch('/api/users/:id', authMiddleware, asyncHandler(async (req, res) => {
   }
   if (body.active !== undefined) { if (typeof body.active !== 'boolean') fail(400, 'Поле active должно быть boolean', 'VALIDATION_ERROR'); if (self && !body.active) fail(400, 'Нельзя деактивировать текущего пользователя', 'VALIDATION_ERROR'); add('active', body.active); }
   if (body.role !== undefined) add('"role"', nextRole);
-  if (req.user.role !== 'employee' && (hasScopeFields || body.role !== undefined)) { add('department_ids', scope.ids); add('all_departments', scope.all); add('department_id', scope.all ? null : scope.ids[0]); }
-  if (!scope.all && scope.ids.length) await syncDepartments([{ id: scope.ids[0], name: body.department_name || target.department_name }]);
+  if (body.role !== undefined) { add('department_ids', []); add('all_departments', nextRole !== 'employee'); add('department_id', null); add('department_name', null); }
   if (body.password !== undefined) { if (req.user.role === 'employee' && !(await verifyPassword(body.current_password, req.user.password_hash))) fail(401, 'Текущий пароль неверен', 'INVALID_CREDENTIALS'); validatePassword(body.password); add('password_hash', await hashPassword(body.password)); }
-  if (body.iiko_employee_code !== undefined || hasScopeFields || body.role !== undefined) await ensureIikoCodeAvailable(body.iiko_employee_code === undefined ? target.iiko_employee_code : boundedString(body.iiko_employee_code, 'iiko_employee_code', 100), scope, target.id);
+  if (body.iiko_employee_code !== undefined) await ensureIikoCodeAvailable(boundedString(body.iiko_employee_code, 'iiko_employee_code', 100), target.id);
   if (!fields.length) fail(400, 'Нет изменений', 'VALIDATION_ERROR'); fields.push('updated_at = NOW()'); values.push(target.id);
   let updated;
   try {
@@ -541,12 +495,8 @@ app.get('/api/tasks', authMiddleware, asyncHandler(async (req, res) => res.json(
 app.get('/api/tasks/:id', authMiddleware, asyncHandler(async (req, res) => { const task = await getTask(idValue(req.params.id)); if (!task) fail(404, 'Задача не найдена', 'NOT_FOUND'); return res.json({ success: true, task: await taskDetail(task, req.user) }); }));
 app.post('/api/tasks', authMiddleware, requireRoles('developer', 'supervisor', 'manager'), asyncHandler(async (req, res) => {
   const body = req.body || {}; const title = boundedString(body.title, 'title', 200, true); const description = boundedString(body.description, 'description', 50000); const status = normalizeStatus(body.status || 'new'); const priority = normalizePriority(body.priority || 'normal'); const dueAt = body.due_at ? new Date(body.due_at) : null; if (dueAt && Number.isNaN(dueAt.getTime())) fail(400, 'Некорректная дата выполнения', 'VALIDATION_ERROR');
-  let departmentId = body.department_id ? boundedString(body.department_id, 'department_id', 128) : null; let departmentName = boundedString(body.department_name, 'department_name', 200); const assigneeId = body.assignee_id ? String(body.assignee_id) : null;
+  const departmentId = body.department_id ? boundedString(body.department_id, 'department_id', 128) : null; const departmentName = boundedString(body.department_name, 'department_name', 200); const assigneeId = body.assignee_id ? String(body.assignee_id) : null;
   const assignee = assigneeId ? await getUserById(assigneeId) : null;
-  if (assignee && !departmentId) {
-    const assigneeScope = userScope(assignee);
-    if (!assigneeScope.all && assigneeScope.ids.length === 1) { departmentId = assigneeScope.ids[0]; departmentName = assignee.department_name; }
-  }
   validateTaskDepartment(req.user, departmentId);
   if (assigneeId) validateTaskAssignee(assignee, departmentId);
   const client = await pool.connect();
@@ -604,7 +554,7 @@ app.get('/api/attachments/:id', authMiddleware, asyncHandler(async (req, res) =>
   res.set('Content-Type', row.mime_type); res.set('Content-Length', String(row.size_bytes)); res.set('Content-Disposition', `inline; filename="${row.filename.replace(/["\\\r\n]/g, '_')}"`); return res.send(row.data);
 }));
 app.get('/api/task-stats', authMiddleware, asyncHandler(async (req, res) => {
-  let query = 'SELECT status, COUNT(*)::int AS count FROM tasks'; const params = []; if (req.user.role === 'supervisor') { const scope = userScope(req.user); if (!scope.all) { query += ' WHERE department_id = ANY($1::text[])'; params.push(scope.ids); } } if (req.user.role === 'manager') { const scope = userScope(req.user); if (scope.all) query += ' WHERE department_id IS NOT NULL'; else { query += ' WHERE department_id = ANY($1::text[])'; params.push(scope.ids); } } if (req.user.role === 'employee') { query += ' WHERE assignee_id = $1'; params.push(req.user.id); } query += ' GROUP BY status';
+  let query = 'SELECT status, COUNT(*)::int AS count FROM tasks'; const params = []; if (req.user.role === 'employee') { query += ' WHERE assignee_id = $1'; params.push(req.user.id); } query += ' GROUP BY status';
   const stats = { total: 0, new: 0, in_progress: 0, review: 0, done: 0 }; (await pool.query(query, params)).rows.forEach((row) => { stats[row.status] = row.count; stats.total += row.count; }); return res.json({ success: true, stats });
 }));
 
